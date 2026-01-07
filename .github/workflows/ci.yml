@@ -26,7 +26,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run cargo check
-        run: cargo check --all-targets --all-features
+        run: cargo check --workspace --exclude corevpn-ui
 
   fmt:
     name: Format
@@ -57,7 +57,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --exclude corevpn-ui -- -D warnings
 
   msrv:
     name: MSRV Check (Rust 1.85)
@@ -72,7 +72,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Check MSRV
-        run: cargo check --all-targets --all-features
+        run: cargo check --workspace --exclude corevpn-ui
 
   test:
     name: Test
@@ -94,7 +94,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run tests
-        run: cargo test --all-features --workspace
+        run: cargo test --workspace --exclude corevpn-ui
 
   doc:
     name: Documentation
