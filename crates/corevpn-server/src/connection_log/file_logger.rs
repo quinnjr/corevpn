@@ -195,6 +195,8 @@ impl FileConnectionLogger {
     fn write_event(&self, event: &ConnectionEvent) -> Result<()> {
         let mut writer_guard = self.writer.lock();
         if let Some(ref mut writer) = *writer_guard {
+            // Serialize to JSON - serde_json automatically escapes special characters
+            // This prevents log injection attacks
             let json = serde_json::to_string(event)?;
             writeln!(writer, "{}", json)?;
             self.pending.fetch_add(1, Ordering::Relaxed);

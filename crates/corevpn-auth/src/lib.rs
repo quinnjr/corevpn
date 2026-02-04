@@ -21,15 +21,17 @@ pub use flow::{AuthFlow, AuthState, DeviceAuthFlow};
 pub use token::{TokenSet, TokenValidator, UserInfo};
 pub use session::{AuthSession, AuthSessionManager};
 
+use secrecy::{Secret, SecretString};
+
 /// Supported OAuth2 providers with pre-configured settings
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum KnownProvider {
     /// Google Workspace
     Google {
         /// OAuth2 Client ID
         client_id: String,
         /// OAuth2 Client Secret
-        client_secret: String,
+        client_secret: SecretString,
         /// Allowed domain (e.g., "company.com")
         allowed_domain: Option<String>,
     },
@@ -38,7 +40,7 @@ pub enum KnownProvider {
         /// OAuth2 Client ID
         client_id: String,
         /// OAuth2 Client Secret
-        client_secret: String,
+        client_secret: SecretString,
         /// Tenant ID (or "common" for multi-tenant)
         tenant_id: String,
     },
@@ -47,7 +49,7 @@ pub enum KnownProvider {
         /// OAuth2 Client ID
         client_id: String,
         /// OAuth2 Client Secret
-        client_secret: String,
+        client_secret: SecretString,
         /// Okta domain (e.g., "company.okta.com")
         domain: String,
         /// Authorization server ID (or "default")
@@ -60,7 +62,7 @@ pub enum KnownProvider {
         /// OAuth2 Client ID
         client_id: String,
         /// OAuth2 Client Secret
-        client_secret: String,
+        client_secret: SecretString,
         /// Issuer URL (for OIDC discovery)
         issuer_url: String,
     },
@@ -95,7 +97,7 @@ impl KnownProvider {
     }
 
     /// Get the client secret
-    pub fn client_secret(&self) -> &str {
+    pub fn client_secret(&self) -> &SecretString {
         match self {
             KnownProvider::Google { client_secret, .. } => client_secret,
             KnownProvider::Microsoft { client_secret, .. } => client_secret,

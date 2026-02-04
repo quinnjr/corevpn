@@ -32,21 +32,15 @@ impl Anonymizer {
     }
 
     fn generate_salt(day: u32) -> [u8; 32] {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        let mut hasher = DefaultHasher::new();
-        day.hash(&mut hasher);
-        "corevpn-anonymizer-salt".hash(&mut hasher);
-
-        let hash = hasher.finish();
+        use sha2::{Sha256, Digest};
+        
+        let mut hasher = Sha256::new();
+        hasher.update(&day.to_le_bytes());
+        hasher.update(b"corevpn-anonymizer-salt");
+        
+        let hash = hasher.finalize();
         let mut salt = [0u8; 32];
-
-        // Fill salt from hash (repeated)
-        for (i, byte) in salt.iter_mut().enumerate() {
-            *byte = ((hash >> ((i % 8) * 8)) & 0xFF) as u8;
-        }
-
+        salt.copy_from_slice(&hash[..32]);
         salt
     }
 
@@ -186,14 +180,34 @@ impl Anonymizer {
     }
 
     fn hash_ip(&self, ip: IpAddr) -> IpAddr {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        let mut hasher = DefaultHasher::new();
-        ip.hash(&mut hasher);
-        self.daily_salt.hash(&mut hasher);
-
-        let hash = hasher.finish();
+        use sha2::{Sha256, Digest};
+        use hmac::{Hmac, Mac};
+        
+        type HmacSha256 = Hmac<Sha256>;
+        
+        // Create HMAC with daily salt as key
+        let mut mac = HmacSha256::new_from_slice(&self.daily_salt)
+            .expect("HMAC can take key of any size");
+        
+        // Hash the IP address
+        let ip_bytes = match ip {
+            IpAddr::V4(v4) => {
+                let mut bytes = vec![0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+                bytes[0..4].copy_from_slice(&v4.octets());
+                bytes
+            }
+            IpAddr::V6(v6) => v6.octets().to_vec(),
+        };
+        
+        mac.update(&ip_bytes);
+        let result = mac.finalize();
+        let hash_bytes = result.into_bytes();
+        
+        // Use first 8 bytes for hash value
+        let hash = u64::from_le_bytes([
+            hash_bytes[0], hash_bytes[1], hash_bytes[2], hash_bytes[3],
+            hash_bytes[4], hash_bytes[5], hash_bytes[6], hash_bytes[7],
+        ]);
 
         match ip {
             IpAddr::V4(_) => {
@@ -256,15 +270,24 @@ impl Anonymizer {
         }
 
         username.map(|u| {
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-
-            let mut hasher = DefaultHasher::new();
-            u.hash(&mut hasher);
-            self.daily_salt.hash(&mut hasher);
-
-            let hash = hasher.finish();
-            format!("user_{:016x}", hash)
+            use sha2::{Sha256, Digest};
+            use hmac::{Hmac, Mac};
+            
+            type HmacSha256 = Hmac<Sha256>;
+            
+            // Create HMAC with daily salt as key
+            let mut mac = HmacSha256::new_from_slice(&self.daily_salt)
+                .expect("HMAC can take key of any size");
+            
+            mac.update(u.as_bytes());
+            let result = mac.finalize();
+            let hash_bytes = result.into_bytes();
+            
+            // Use first 8 bytes for hash value
+            format!("user_{:016x}", u64::from_le_bytes([
+                hash_bytes[0], hash_bytes[1], hash_bytes[2], hash_bytes[3],
+                hash_bytes[4], hash_bytes[5], hash_bytes[6], hash_bytes[7],
+            ]))
         })
     }
 

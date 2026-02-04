@@ -3,7 +3,8 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
-use ipnet::Ipv4Net;
+use ipnet::{Ipv4Net, Ipv6Net};
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 
 use crate::{ConfigError, Result};
@@ -175,8 +176,8 @@ pub struct OAuthSettings {
     /// Client ID
     pub client_id: String,
     /// Client secret (will be encrypted at rest)
-    #[serde(skip_serializing)]
-    pub client_secret: String,
+    #[serde(skip_serializing, deserialize_with = "deserialize_secret_string")]
+    pub client_secret: SecretString,
     /// Issuer URL (for generic OIDC)
     #[serde(default)]
     pub issuer_url: Option<String>,
@@ -382,8 +383,8 @@ pub struct AdminSettings {
     #[serde(default = "default_admin_addr")]
     pub listen_addr: SocketAddr,
     /// API key (auto-generated if not set)
-    #[serde(skip_serializing)]
-    pub api_key: Option<String>,
+    #[serde(skip_serializing, deserialize_with = "deserialize_optional_secret_string")]
+    pub api_key: Option<SecretString>,
     /// Allowed IP addresses
     #[serde(default)]
     pub allowed_ips: Vec<String>,
@@ -671,15 +672,126 @@ impl ServerConfig {
         Ok(())
     }
 
+    /// Validate hostname or IP address
+    fn validate_hostname_or_ip(host: &str) -> Result<()> {
+        // Try parsing as IP address first
+        if host.parse::<IpAddr>().is_ok() {
+            return Ok(());
+        }
+
+        // Validate as hostname
+        // Basic hostname validation: must not be empty, reasonable length, valid characters
+        if host.is_empty() {
+            return Err(ConfigError::ValidationError("Hostname cannot be empty".into()));
+        }
+
+        if host.len() > 253 {
+            return Err(ConfigError::ValidationError(
+                "Hostname exceeds maximum length (253 characters)".into(),
+            ));
+        }
+
+        // Check for valid hostname characters (letters, digits, hyphens, dots)
+        // Must start and end with alphanumeric
+        if !host.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '.') {
+            return Err(ConfigError::ValidationError(
+                "Hostname contains invalid characters".into(),
+            ));
+        }
+
+        if host.starts_with('.') || host.ends_with('.') {
+            return Err(ConfigError::ValidationError(
+                "Hostname cannot start or end with a dot".into(),
+            ));
+        }
+
+        if host.starts_with('-') || host.ends_with('-') {
+            return Err(ConfigError::ValidationError(
+                "Hostname cannot start or end with a hyphen".into(),
+            ));
+        }
+
+        // Check for consecutive dots
+        if host.contains("..") {
+            return Err(ConfigError::ValidationError(
+                "Hostname cannot contain consecutive dots".into(),
+            ));
+        }
+
+        // Each label (between dots) must be 1-63 characters
+        for label in host.split('.') {
+            if label.is_empty() {
+                return Err(ConfigError::ValidationError(
+                    "Hostname labels cannot be empty".into(),
+                ));
+            }
+            if label.len() > 63 {
+                return Err(ConfigError::ValidationError(format!(
+                    "Hostname label '{}' exceeds maximum length (63 characters)",
+                    label
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Validate configuration
     pub fn validate(&self) -> Result<()> {
         if self.server.public_host.is_empty() {
             return Err(ConfigError::MissingField("server.public_host".into()));
         }
 
+        // Validate hostname or IP address
+        Self::validate_hostname_or_ip(&self.server.public_host)?;
+
         // Validate subnet
         self.network.subnet.parse::<Ipv4Net>()
             .map_err(|e| ConfigError::ValidationError(format!("invalid subnet: {}", e)))?;
+
+        // Validate IPv6 subnet if provided
+        if let Some(ref subnet_v6) = self.network.subnet_v6 {
+            subnet_v6.parse::<ipnet::Ipv6Net>()
+                .map_err(|e| ConfigError::ValidationError(format!("invalid IPv6 subnet: {}", e)))?;
+        }
+
+        // Validate DNS servers
+        for (idx, dns) in self.network.dns.iter().enumerate() {
+            dns.parse::<IpAddr>()
+                .map_err(|e| ConfigError::ValidationError(format!(
+                    "invalid DNS server #{} '{}': {}",
+                    idx + 1, dns, e
+                )))?;
+        }
+
+        // Validate DNS search domains
+        for (idx, domain) in self.network.dns_search.iter().enumerate() {
+            if domain.is_empty() {
+                return Err(ConfigError::ValidationError(format!(
+                    "DNS search domain #{} cannot be empty",
+                    idx + 1
+                )));
+            }
+            // Basic domain validation
+            if domain.len() > 253 {
+                return Err(ConfigError::ValidationError(format!(
+                    "DNS search domain #{} exceeds maximum length (253 characters)",
+                    idx + 1
+                )));
+            }
+        }
+
+        // Validate push routes
+        for (idx, route) in self.network.push_routes.iter().enumerate() {
+            let is_valid_ipv4 = route.parse::<Ipv4Net>().is_ok();
+            let is_valid_ipv6 = route.parse::<Ipv6Net>().is_ok();
+            if !is_valid_ipv4 && !is_valid_ipv6 {
+                return Err(ConfigError::ValidationError(format!(
+                    "invalid push route #{} '{}': must be valid IPv4 or IPv6 network",
+                    idx + 1, route
+                )));
+            }
+        }
 
         // Validate OAuth if enabled
         if let Some(oauth) = &self.oauth {
@@ -687,10 +799,72 @@ impl ServerConfig {
                 if oauth.client_id.is_empty() {
                     return Err(ConfigError::MissingField("oauth.client_id".into()));
                 }
-                if oauth.client_secret.is_empty() {
+                if oauth.client_secret.expose_secret().is_empty() {
                     return Err(ConfigError::MissingField("oauth.client_secret".into()));
                 }
             }
+        }
+
+        // Validate port ranges
+        if self.server.listen_addr.port() == 0 {
+            return Err(ConfigError::ValidationError(
+                "Server listen port cannot be 0".into(),
+            ));
+        }
+        if let Some(tcp_addr) = &self.server.tcp_listen_addr {
+            if tcp_addr.port() == 0 {
+                return Err(ConfigError::ValidationError(
+                    "TCP listen port cannot be 0".into(),
+                ));
+            }
+        }
+        if self.admin.listen_addr.port() == 0 {
+            return Err(ConfigError::ValidationError(
+                "Admin API listen port cannot be 0".into(),
+            ));
+        }
+
+        // Validate max_clients is reasonable
+        if self.server.max_clients == 0 {
+            return Err(ConfigError::ValidationError(
+                "max_clients must be greater than 0".into(),
+            ));
+        }
+        if self.server.max_clients > 100000 {
+            return Err(ConfigError::ValidationError(
+                "max_clients exceeds maximum allowed value (100000)".into(),
+            ));
+        }
+
+        // Validate certificate lifetimes
+        if self.security.cert_lifetime_days == 0 {
+            return Err(ConfigError::ValidationError(
+                "cert_lifetime_days must be greater than 0".into(),
+            ));
+        }
+        if self.security.client_cert_lifetime_days == 0 {
+            return Err(ConfigError::ValidationError(
+                "client_cert_lifetime_days must be greater than 0".into(),
+            ));
+        }
+        if self.security.client_cert_lifetime_days > self.security.cert_lifetime_days {
+            return Err(ConfigError::ValidationError(
+                "client_cert_lifetime_days cannot exceed cert_lifetime_days".into(),
+            ));
+        }
+
+        // Validate renegotiation interval
+        if self.security.reneg_sec == 0 {
+            return Err(ConfigError::ValidationError(
+                "reneg_sec must be greater than 0".into(),
+            ));
+        }
+
+        // Validate MTU
+        if self.network.mtu < 68 || self.network.mtu > 1500 {
+            return Err(ConfigError::ValidationError(
+                "MTU must be between 68 and 1500".into(),
+            ));
         }
 
         Ok(())
@@ -730,6 +904,26 @@ impl ServerConfig {
     pub fn dh_path(&self) -> PathBuf {
         self.server.data_dir.join("dh.pem")
     }
+}
+
+/// Deserialize a SecretString from a regular string
+fn deserialize_secret_string<'de, D>(deserializer: D) -> std::result::Result<SecretString, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    Ok(SecretString::new(s))
+}
+
+/// Deserialize an Option<SecretString> from an Option<String>
+fn deserialize_optional_secret_string<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<SecretString>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<String>::deserialize(deserializer)?;
+    Ok(opt.map(SecretString::new))
 }
 
 #[cfg(test)]

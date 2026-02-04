@@ -1,14 +1,85 @@
 //! Authentication Session Management
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use tracing::{debug, warn};
 
 use crate::{AuthError, AuthState, Result, TokenSet, UserInfo};
+
+/// Rate limiter entry
+#[derive(Clone)]
+struct RateLimitEntry {
+    count: u32,
+    reset_at: SystemTime,
+}
+
+/// In-memory rate limiter for brute force protection
+pub struct RateLimiter {
+    /// Attempts per window
+    max_attempts: u32,
+    /// Window duration
+    window: Duration,
+    /// Entries by key (IP address, email, etc.)
+    entries: RwLock<HashMap<String, RateLimitEntry>>,
+}
+
+impl RateLimiter {
+    /// Create a new rate limiter
+    pub fn new(max_attempts: u32, window: Duration) -> Self {
+        Self {
+            max_attempts,
+            window,
+            entries: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Check if key is rate limited
+    pub fn check(&self, key: &str) -> bool {
+        let mut entries = self.entries.write();
+        let now = SystemTime::now();
+
+        // Clean up expired entries
+        entries.retain(|_, entry| entry.reset_at > now);
+
+        let entry = entries.entry(key.to_string()).or_insert_with(|| {
+            RateLimitEntry {
+                count: 0,
+                reset_at: now + self.window,
+            }
+        });
+
+        // Check if reset time has passed
+        if now >= entry.reset_at {
+            entry.count = 0;
+            entry.reset_at = now + self.window;
+        }
+
+        entry.count += 1;
+        let allowed = entry.count <= self.max_attempts;
+
+        if !allowed {
+            warn!("Rate limit exceeded for key: {}", key);
+        }
+
+        allowed
+    }
+
+    /// Reset rate limit for a key
+    pub fn reset(&self, key: &str) {
+        self.entries.write().remove(key);
+    }
+
+    /// Clean up expired entries
+    pub fn cleanup(&self) {
+        let now = SystemTime::now();
+        self.entries.write().retain(|_, entry| entry.reset_at > now);
+    }
+}
 
 /// Authentication session
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,7 +121,8 @@ impl AuthSession {
             user_info: None,
             provider: provider.to_string(),
             created_at: now,
-            expires_at: now + chrono::Duration::from_std(lifetime).unwrap(),
+            expires_at: now + chrono::Duration::from_std(lifetime)
+                .unwrap_or_else(|_| chrono::Duration::seconds(86400)), // Fallback to 24 hours
             last_activity: now,
             vpn_session_id: None,
             client_ip: None,
@@ -149,6 +221,8 @@ pub struct AuthSessionManager {
     default_lifetime: Duration,
     /// Maximum sessions per user
     max_sessions_per_user: usize,
+    /// Rate limiter for session lookups
+    lookup_rate_limiter: RateLimiter,
 }
 
 impl AuthSessionManager {
@@ -159,6 +233,7 @@ impl AuthSessionManager {
             sessions_by_state: RwLock::new(HashMap::new()),
             default_lifetime,
             max_sessions_per_user,
+            lookup_rate_limiter: RateLimiter::new(100, Duration::from_secs(60)), // 100 lookups per minute
         }
     }
 
@@ -178,15 +253,36 @@ impl AuthSessionManager {
         session
     }
 
-    /// Get session by ID
-    pub fn get_session(&self, id: &str) -> Option<AuthSession> {
+    /// Get session by ID (with rate limiting)
+    pub fn get_session(&self, id: &str, client_ip: Option<&str>) -> Option<AuthSession> {
+        // Rate limit lookups by IP or session ID
+        let rate_limit_key = client_ip.unwrap_or(id);
+        if !self.lookup_rate_limiter.check(rate_limit_key) {
+            warn!("Rate limit exceeded for session lookup: {}", rate_limit_key);
+            return None;
+        }
+
+        // Verify session ID is a valid UUID v4
+        if Uuid::parse_str(id).map(|u| u.get_version() != Some(uuid::Version::Random))
+            .unwrap_or(true) {
+            warn!("Invalid session ID format: {}", id);
+            return None;
+        }
+
         self.sessions.read().get(id).cloned()
     }
 
-    /// Get session by OAuth2 state
-    pub fn get_session_by_state(&self, state: &str) -> Option<AuthSession> {
+    /// Get session by OAuth2 state (with rate limiting)
+    pub fn get_session_by_state(&self, state: &str, client_ip: Option<&str>) -> Option<AuthSession> {
+        // Rate limit lookups
+        let rate_limit_key = client_ip.unwrap_or(state);
+        if !self.lookup_rate_limiter.check(rate_limit_key) {
+            warn!("Rate limit exceeded for state lookup: {}", rate_limit_key);
+            return None;
+        }
+
         let session_id = self.sessions_by_state.read().get(state)?.clone();
-        self.get_session(&session_id)
+        self.get_session(&session_id, client_ip)
     }
 
     /// Update session
@@ -215,8 +311,15 @@ impl AuthSessionManager {
         }
     }
 
-    /// Get all sessions for a user (by email)
-    pub fn get_user_sessions(&self, email: &str) -> Vec<AuthSession> {
+    /// Get all sessions for a user (by email) - with rate limiting
+    pub fn get_user_sessions(&self, email: &str, client_ip: Option<&str>) -> Vec<AuthSession> {
+        // Rate limit user session lookups
+        let rate_limit_key = client_ip.unwrap_or(email);
+        if !self.lookup_rate_limiter.check(rate_limit_key) {
+            warn!("Rate limit exceeded for user session lookup: {}", rate_limit_key);
+            return Vec::new();
+        }
+
         self.sessions
             .read()
             .values()
@@ -312,16 +415,16 @@ mod tests {
         let state = session.state().unwrap().to_string();
 
         // Get by ID
-        let found = manager.get_session(&session.id);
+        let found = manager.get_session(&session.id, None);
         assert!(found.is_some());
 
         // Get by state
-        let found = manager.get_session_by_state(&state);
+        let found = manager.get_session_by_state(&state, None);
         assert!(found.is_some());
 
         // Remove
         manager.remove_session(&session.id);
-        assert!(manager.get_session(&session.id).is_none());
+        assert!(manager.get_session(&session.id, None).is_none());
     }
 
     #[test]

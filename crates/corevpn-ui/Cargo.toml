@@ -11,7 +11,6 @@ authors.workspace = true
 keywords = ["vpn", "gui", "desktop", "openvpn", "client"]
 categories = ["gui", "network-programming"]
 readme = "README.md"
-# Not published - requires local openkit with VPN widget extensions
 publish = false
 
 [[bin]]
@@ -24,8 +23,9 @@ corevpn-core = { workspace = true }
 corevpn-auth = { workspace = true }
 corevpn-config = { workspace = true }
 
-# UI Framework (local dependency with VPN widget extensions)
-openkit = { path = "../../../openkit" }
+# UI Framework
+egui = { workspace = true }
+eframe = { workspace = true }
 
 # Async runtime
 tokio = { workspace = true }
@@ -49,6 +49,9 @@ chrono = { workspace = true }
 # Async utilities
 futures = { workspace = true }
 parking_lot = { workspace = true }
+
+# Security
+zeroize = { workspace = true }
 
 [features]
 default = []

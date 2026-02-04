@@ -337,7 +337,7 @@ pub fn dashboard(
 }
 
 /// Clients list page
-pub fn clients_list(clients: &[ClientInfo]) -> String {
+pub fn clients_list(clients: &[ClientInfo], csrf_token: &str) -> String {
     let mut rows = String::new();
 
     if clients.is_empty() {
@@ -392,6 +392,7 @@ pub fn clients_list(clients: &[ClientInfo]) -> String {
                                 </svg>
                             </a>
                             <form action="/admin/clients/{id}/revoke" method="POST" class="inline" onsubmit="return confirm('Revoke this client?')">
+                                <input type="hidden" name="csrf_token" value="{csrf_token}">
                                 <button type="submit" class="p-2 rounded-lg hover:bg-neon-pink/10 text-void-400 hover:text-neon-pink transition-colors" title="Revoke">
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/>
@@ -402,14 +403,14 @@ pub fn clients_list(clients: &[ClientInfo]) -> String {
                     </td>
                 </tr>
             "#,
-                initial = client.name.chars().next().unwrap_or('?').to_uppercase(),
-                name = client.name,
-                email = client.email,
+                initial = html_escape(&client.name.chars().next().unwrap_or('?').to_uppercase().to_string()),
+                name = html_escape(&client.name),
+                email = html_escape(&client.email),
                 status_class = status_class,
                 status_text = status_text,
-                vpn_ip = client.vpn_ip.as_deref().unwrap_or("-"),
-                last_seen = client.last_seen.as_deref().unwrap_or("Never"),
-                id = client.id,
+                vpn_ip = html_escape(client.vpn_ip.as_deref().unwrap_or("-")),
+                last_seen = html_escape(client.last_seen.as_deref().unwrap_or("Never")),
+                id = html_escape(&client.id),
             ));
         }
     }
@@ -460,11 +461,13 @@ pub fn clients_list(clients: &[ClientInfo]) -> String {
         rows = rows,
     );
 
+    // Note: csrf_token available for future use in forms
+    let _ = csrf_token;
     base("Clients", &content)
 }
 
 /// New client form
-pub fn new_client() -> String {
+pub fn new_client(csrf_token: &str) -> String {
     let content = format!(r##"
         {nav}
         <main class="ml-64 p-8">
@@ -481,6 +484,7 @@ pub fn new_client() -> String {
 
             <div class="max-w-2xl">
                 <form action="/admin/clients" method="POST" class="glass rounded-xl p-8 space-y-6">
+                    <input type="hidden" name="csrf_token" value="{csrf_token}">
                     <div>
                         <label for="name" class="block text-sm font-medium text-void-300 mb-2">Client Name</label>
                         <input type="text" id="name" name="name" required
@@ -527,7 +531,7 @@ pub fn new_client() -> String {
 }
 
 /// Sessions list page
-pub fn sessions_list(sessions: &[SessionInfo]) -> String {
+pub fn sessions_list(sessions: &[SessionInfo], csrf_token: &str) -> String {
     let mut rows = String::new();
 
     if sessions.is_empty() {
@@ -558,6 +562,7 @@ pub fn sessions_list(sessions: &[SessionInfo]) -> String {
                     <td class="px-6 py-4 text-void-400 text-sm">{data_usage}</td>
                     <td class="px-6 py-4">
                         <form action="/admin/sessions/{id}/disconnect" method="POST" class="inline" onsubmit="return confirm('Disconnect this session?')">
+                            <input type="hidden" name="csrf_token" value="{csrf_token}">
                             <button type="submit" class="px-3 py-1 rounded-lg bg-neon-pink/10 text-neon-pink text-sm font-medium hover:bg-neon-pink/20 transition-colors">
                                 Disconnect
                             </button>
@@ -565,12 +570,12 @@ pub fn sessions_list(sessions: &[SessionInfo]) -> String {
                     </td>
                 </tr>
             "#,
-                client = session.client_name,
-                vpn_ip = session.vpn_ip,
-                real_ip = session.real_ip,
-                connected_at = session.connected_at,
-                data_usage = session.data_usage,
-                id = session.id,
+                client = html_escape(&session.client_name),
+                vpn_ip = html_escape(&session.vpn_ip),
+                real_ip = html_escape(&session.real_ip),
+                connected_at = html_escape(&session.connected_at),
+                data_usage = html_escape(&session.data_usage),
+                id = html_escape(&session.id),
             ));
         }
     }
@@ -606,6 +611,8 @@ pub fn sessions_list(sessions: &[SessionInfo]) -> String {
         rows = rows,
     );
 
+    // Note: csrf_token available for future use in forms
+    let _ = csrf_token;
     base("Sessions", &content)
 }
 
@@ -618,6 +625,7 @@ pub fn settings(
     max_clients: u32,
     oauth_enabled: bool,
     oauth_provider: Option<&str>,
+    csrf_token: &str,
 ) -> String {
     let oauth_status = if oauth_enabled {
         format!(r#"<span class="text-neon-green">Enabled ({provider})</span>"#,
@@ -720,6 +728,7 @@ pub fn settings(
                                 <p class="text-sm text-void-500">Force disconnect all active sessions</p>
                             </div>
                             <form action="/admin/sessions/disconnect-all" method="POST" onsubmit="return confirm('Disconnect all sessions?')">
+                                <input type="hidden" name="csrf_token" value="{csrf_token}">
                                 <button type="submit" class="px-4 py-2 bg-neon-pink/10 text-neon-pink rounded-lg text-sm font-medium hover:bg-neon-pink/20 transition-colors">
                                     Disconnect All
                                 </button>
@@ -737,6 +746,7 @@ pub fn settings(
         subnet = subnet,
         max_clients = max_clients,
         oauth_status = oauth_status,
+        csrf_token = html_escape(csrf_token),
     );
 
     base("Settings", &content)
@@ -816,8 +826,8 @@ pub fn client_download(client_name: &str, filename: &str, ovpn_content: &str) ->
         </script>
     "##,
         nav = nav("clients"),
-        client_name = client_name,
-        filename = filename,
+        client_name = html_escape(client_name),
+        filename = html_escape(filename),
         encoded = encoded,
         ovpn_preview = html_escape(ovpn_content),
     );
@@ -867,7 +877,7 @@ fn html_escape(s: &str) -> String {
 }
 
 /// Quick generate page - simple form for fast config generation
-pub fn quick_generate() -> String {
+pub fn quick_generate(csrf_token: &str) -> String {
     let content = format!(r##"
         {nav}
         <main class="ml-64 p-8">
@@ -885,6 +895,7 @@ pub fn quick_generate() -> String {
             <div class="max-w-xl">
                 <div class="glass rounded-xl p-8">
                     <form action="/admin/clients/quick-generate" method="POST" class="space-y-6">
+                        <input type="hidden" name="csrf_token" value="{csrf_token}">
                         <div>
                             <label for="name" class="block text-sm font-medium text-void-300 mb-2">Client Name</label>
                             <input type="text" id="name" name="name" required
@@ -973,8 +984,8 @@ pub fn error_page(status: u16, message: &str) -> String {
     "##,
         emoji = emoji,
         status = status,
-        title = title,
-        message = message,
+        title = html_escape(title),
+        message = html_escape(message),
     );
 
     base("Error", &content)

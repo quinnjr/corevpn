@@ -68,6 +68,9 @@ impl ConfigGenerator {
         builder = builder.extra_option("compress stub-v2");
 
         let config = builder.build();
+        // Validate configuration before generating .ovpn content
+        config.validate()
+            .map_err(|e| ConfigError::ValidationError(format!("Invalid client config: {}", e)))?;
         let ovpn_content = config.to_ovpn();
 
         Ok(GeneratedConfig {
@@ -106,6 +109,9 @@ impl ConfigGenerator {
         }
 
         let config = builder.build();
+        // Validate configuration before generating .ovpn content
+        config.validate()
+            .map_err(|e| ConfigError::ValidationError(format!("Invalid mobile config: {}", e)))?;
         generated.ovpn_content = config.to_ovpn();
 
         Ok(generated)
@@ -139,7 +145,61 @@ impl GeneratedConfig {
 
     /// Save to file
     pub fn save(&self, dir: &Path) -> Result<std::path::PathBuf> {
-        let path = dir.join(self.filename());
+        // Sanitize filename - reject any path separators or parent directory references
+        let filename = self.filename();
+        if filename.contains(std::path::MAIN_SEPARATOR) || filename.contains("..") {
+            return Err(crate::ConfigError::ValidationError(
+                "Invalid filename: contains path separators or parent directory references".into(),
+            ));
+        }
+
+        // Ensure directory exists and is actually a directory
+        if !dir.exists() {
+            std::fs::create_dir_all(dir)?;
+        }
+        if !dir.is_dir() {
+            return Err(crate::ConfigError::ValidationError(
+                "Target path is not a directory".into(),
+            ));
+        }
+
+        // Canonicalize the directory to resolve symlinks
+        let canonical_dir = dir.canonicalize()
+            .map_err(|e| crate::ConfigError::IoError(e))?;
+
+        // Build the final path - using join() ensures we can't escape the directory
+        // as long as filename doesn't contain path separators (which we already checked)
+        let path = canonical_dir.join(&filename);
+
+        // Verify the path is still within the canonical directory
+        // This prevents path traversal attacks even if join() somehow allows it
+        // Since the file doesn't exist yet, we check that the path's parent is within canonical_dir
+        if let Some(parent) = path.parent() {
+            // Canonicalize the parent to resolve any symlinks
+            let canonical_parent = parent.canonicalize()
+                .map_err(|e| crate::ConfigError::IoError(e))?;
+            
+            // Ensure the canonical parent is within the canonical directory
+            if !canonical_parent.starts_with(&canonical_dir) {
+                return Err(crate::ConfigError::ValidationError(
+                    "Path traversal detected: final path outside target directory".into(),
+                ));
+            }
+        } else {
+            // This shouldn't happen, but be defensive
+            return Err(crate::ConfigError::ValidationError(
+                "Invalid path: no parent directory".into(),
+            ));
+        }
+
+        // Additional check: ensure the filename itself doesn't contain any path components
+        // This is redundant but provides defense in depth
+        if path != canonical_dir.join(&filename) {
+            return Err(crate::ConfigError::ValidationError(
+                "Path traversal detected: invalid path construction".into(),
+            ));
+        }
+
         std::fs::write(&path, &self.ovpn_content)?;
         Ok(path)
     }

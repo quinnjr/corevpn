@@ -214,6 +214,13 @@ impl Packet {
                 None
             };
 
+            // Bounds check before slicing
+            if offset > data.len() {
+                return Err(ProtocolError::PacketTooShort {
+                    expected: offset,
+                    got: data.len(),
+                });
+            }
             return Ok(Packet::Data(DataPacketData {
                 header,
                 peer_id,
@@ -232,7 +239,13 @@ impl Packet {
                 got: data.len(),
             });
         }
+        const MAX_ACK_COUNT: usize = 16; // Reasonable limit to prevent DoS
         let ack_count = data[offset] as usize;
+        if ack_count > MAX_ACK_COUNT {
+            return Err(ProtocolError::InvalidPacket(
+                format!("ACK count {} exceeds maximum {}", ack_count, MAX_ACK_COUNT).into(),
+            ));
+        }
         offset += 1;
 
         // Parse ACKs

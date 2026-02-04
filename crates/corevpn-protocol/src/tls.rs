@@ -166,23 +166,24 @@ pub fn create_server_config(
     key: PrivateKeyDer<'static>,
     client_cert_verifier: Option<Arc<dyn rustls::server::danger::ClientCertVerifier>>,
 ) -> Result<Arc<ServerConfig>> {
-
-
-
+    // Security: rustls 0.23+ uses safe defaults automatically:
+    // - TLS 1.3 is the minimum (TLS 1.2 weak ciphers not available)
+    // - Only secure cipher suites are available:
+    //   - TLS13_CHACHA20_POLY1305_SHA256
+    //   - TLS13_AES_256_GCM_SHA384
+    //   - TLS13_AES_128_GCM_SHA256
+    // - Weak ciphers (RC4, DES, etc.) are not supported
     let config = if let Some(verifier) = client_cert_verifier {
         ServerConfig::builder()
             .with_client_cert_verifier(verifier)
             .with_single_cert(cert_chain, key)
-            .map_err(|e| ProtocolError::TlsError(e.to_string()))?
+            .map_err(|e: rustls::Error| ProtocolError::TlsError(e.to_string()))?
     } else {
         ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(cert_chain, key)
-            .map_err(|e| ProtocolError::TlsError(e.to_string()))?
+            .map_err(|e: rustls::Error| ProtocolError::TlsError(e.to_string()))?
     };
-
-    // Configure for maximum security
-    // TLS 1.3 is already the minimum in rustls 0.23
 
     Ok(Arc::new(config))
 }

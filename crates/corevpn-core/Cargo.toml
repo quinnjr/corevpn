@@ -42,3 +42,6 @@ uuid = { workspace = true }
 
 # Concurrency
 parking_lot = { workspace = true }
+
+# Security
+secrecy = "0.8"

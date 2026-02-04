@@ -34,8 +34,118 @@ pub struct ClientConfig {
 }
 
 impl ClientConfig {
+    /// Validate PEM format
+    fn validate_pem(content: &str, expected_type: &str) -> Result<(), crate::ConfigError> {
+        let content = content.trim();
+        
+        // Check for proper PEM headers/footers
+        let header = format!("-----BEGIN {}", expected_type);
+        let footer = format!("-----END {}", expected_type);
+        
+        if !content.starts_with(&header) {
+            return Err(crate::ConfigError::ValidationError(format!(
+                "Invalid PEM format: missing BEGIN {} header",
+                expected_type
+            )));
+        }
+        
+        if !content.ends_with(&footer) {
+            return Err(crate::ConfigError::ValidationError(format!(
+                "Invalid PEM format: missing END {} footer",
+                expected_type
+            )));
+        }
+        
+        // Basic validation: ensure there's content between headers
+        // Find the end of the header line
+        let header_line_end = content.find('\n').or_else(|| content.find('\r'));
+        if let Some(header_end) = header_line_end {
+            // Find where the footer starts
+            if let Some(footer_start) = content.rfind(&footer) {
+                if footer_start <= header_end {
+                    return Err(crate::ConfigError::ValidationError(format!(
+                        "Invalid PEM format: empty or malformed {} content",
+                        expected_type
+                    )));
+                }
+                // Check that there's actual base64-like content (at least some non-whitespace)
+                let body = &content[header_end + 1..footer_start];
+                if body.trim().is_empty() {
+                    return Err(crate::ConfigError::ValidationError(format!(
+                        "Invalid PEM format: empty {} content",
+                        expected_type
+                    )));
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Validate all certificates and keys before generating .ovpn
+    pub fn validate(&self) -> Result<(), crate::ConfigError> {
+        // Validate CA certificate
+        Self::validate_pem(&self.ca_cert, "CERTIFICATE")
+            .map_err(|e| crate::ConfigError::ValidationError(format!("CA certificate: {}", e)))?;
+        
+        // Validate client certificate
+        Self::validate_pem(&self.client_cert, "CERTIFICATE")
+            .map_err(|e| crate::ConfigError::ValidationError(format!("Client certificate: {}", e)))?;
+        
+        // Validate client key (can be PRIVATE KEY or RSA PRIVATE KEY)
+        let key_valid = Self::validate_pem(&self.client_key, "PRIVATE KEY").is_ok()
+            || Self::validate_pem(&self.client_key, "RSA PRIVATE KEY").is_ok()
+            || Self::validate_pem(&self.client_key, "EC PRIVATE KEY").is_ok();
+        
+        if !key_valid {
+            return Err(crate::ConfigError::ValidationError(
+                "Client key: Invalid PEM format - must be PRIVATE KEY, RSA PRIVATE KEY, or EC PRIVATE KEY".into(),
+            ));
+        }
+        
+        // Validate tls-auth key if present
+        if let Some(ta_key) = &self.tls_auth_key {
+            if ta_key.trim().is_empty() {
+                return Err(crate::ConfigError::ValidationError(
+                    "tls-auth key cannot be empty".into(),
+                ));
+            }
+            // tls-auth keys are typically base64 encoded, not PEM
+            // Just check they're not empty and have reasonable length
+            if ta_key.trim().len() < 32 {
+                return Err(crate::ConfigError::ValidationError(
+                    "tls-auth key appears to be too short".into(),
+                ));
+            }
+        }
+        
+        // Validate tls-crypt key if present
+        if let Some(tc_key) = &self.tls_crypt_key {
+            if tc_key.trim().is_empty() {
+                return Err(crate::ConfigError::ValidationError(
+                    "tls-crypt key cannot be empty".into(),
+                ));
+            }
+            if tc_key.trim().len() < 32 {
+                return Err(crate::ConfigError::ValidationError(
+                    "tls-crypt key appears to be too short".into(),
+                ));
+            }
+        }
+        
+        Ok(())
+    }
+
     /// Generate .ovpn file contents
+    /// 
+    /// # Panics
+    /// Panics if the configuration is invalid. Use `validate()` before calling this method
+    /// to check for errors without panicking.
     pub fn to_ovpn(&self) -> String {
+        // Validate before generating
+        // We panic here because malformed configs should never be written
+        // Callers should validate first if they want to handle errors gracefully
+        self.validate().expect("Invalid client configuration");
         let mut lines = vec![
             "# CoreVPN Client Configuration".to_string(),
             "# Generated automatically - do not edit".to_string(),

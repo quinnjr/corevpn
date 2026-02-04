@@ -1,6 +1,7 @@
 //! VPN Session management
 
 use chrono::{DateTime, Duration, Utc};
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -89,7 +90,7 @@ pub struct Session {
     pub client_version: Option<String>,
     /// OAuth2 access token (if using OAuth2 auth)
     #[serde(skip)]
-    pub oauth_token: Option<String>,
+    pub oauth_token: Option<SecretString>,
 }
 
 impl Session {

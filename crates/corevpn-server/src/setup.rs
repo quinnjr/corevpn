@@ -13,6 +13,7 @@ use console::{style, Emoji, Term};
 use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
 
 use corevpn_config::{ServerConfig, generator::initialize_pki};
+use secrecy::SecretString;
 
 static ROCKET: Emoji<'_, '_> = Emoji("🚀 ", "");
 static LOCK: Emoji<'_, '_> = Emoji("🔒 ", "");
@@ -419,7 +420,7 @@ fn setup_google_oauth(theme: &ColorfulTheme) -> Result<corevpn_config::server::O
         enabled: true,
         provider: "google".to_string(),
         client_id,
-        client_secret,
+        client_secret: SecretString::new(client_secret),
         issuer_url: None,
         tenant_id: None,
         domain: None,
@@ -455,7 +456,7 @@ fn setup_microsoft_oauth(theme: &ColorfulTheme) -> Result<corevpn_config::server
         enabled: true,
         provider: "microsoft".to_string(),
         client_id,
-        client_secret,
+        client_secret: SecretString::new(client_secret),
         issuer_url: None,
         tenant_id: Some(tenant_id),
         domain: None,
@@ -489,7 +490,7 @@ fn setup_okta_oauth(theme: &ColorfulTheme) -> Result<corevpn_config::server::OAu
         enabled: true,
         provider: "okta".to_string(),
         client_id,
-        client_secret,
+        client_secret: SecretString::new(client_secret),
         issuer_url: None,
         tenant_id: None,
         domain: Some(domain),

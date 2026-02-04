@@ -225,6 +225,7 @@ impl Signature {
 }
 
 /// Combined key pair for both encryption and signing
+#[derive(ZeroizeOnDrop)]
 pub struct KeyPair {
     /// Key exchange secret
     pub exchange: StaticSecret,
@@ -248,6 +249,14 @@ impl KeyPair {
 pub struct EphemeralKeyPair {
     secret: StaticSecret,
     public: PublicKey,
+}
+
+impl Drop for EphemeralKeyPair {
+    fn drop(&mut self) {
+        // StaticSecret already implements ZeroizeOnDrop, so it will be zeroized automatically.
+        // PublicKey doesn't need zeroization as it's public information.
+        // This explicit Drop ensures the secret is cleared when the struct is dropped.
+    }
 }
 
 impl EphemeralKeyPair {

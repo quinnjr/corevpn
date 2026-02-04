@@ -116,7 +116,8 @@ impl VpnServer {
         let subnet = config.network.subnet.parse()
             .map_err(|e| anyhow::anyhow!("Invalid subnet: {}", e))?;
 
-        let address_pool = AddressPool::new(Some(subnet), None);
+        let address_pool = AddressPool::new(Some(subnet), None)
+            .map_err(|e| anyhow::anyhow!("Invalid address pool configuration: {}", e))?;
 
         // Load TLS configuration
         let tls_config = Self::load_tls_config(&config)?;
@@ -225,11 +226,17 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
     info!("Public host: {}", config.server.public_host);
     info!("VPN subnet: {}", config.network.subnet);
 
+    // Set resource limits before binding
+    set_resource_limits()?;
+
     let server = Arc::new(VpnServer::new(config.clone()).await?);
 
     // Bind UDP socket
     let socket = UdpSocket::bind(&config.server.listen_addr).await?;
     let socket = Arc::new(socket);
+
+    // Drop privileges after binding (if running as root)
+    drop_privileges()?;
 
     info!("Server ready, waiting for connections...");
 
@@ -578,4 +585,70 @@ impl ServerStats {
             ..Default::default()
         }
     }
+}
+
+/// Set resource limits for the server process
+fn set_resource_limits() -> Result<()> {
+    use nix::sys::resource::{getrlimit, setrlimit, Resource};
+
+    // Set RLIMIT_NOFILE (file descriptors)
+    let (_, hard_limit) = getrlimit(Resource::RLIMIT_NOFILE)?;
+    let soft_limit = (hard_limit.min(65536)).max(1024); // At least 1024, max 65536
+    setrlimit(Resource::RLIMIT_NOFILE, soft_limit, hard_limit)?;
+    info!("Set RLIMIT_NOFILE to {}", soft_limit);
+
+    // Set RLIMIT_NPROC (processes) - prevent fork bombs
+    let (_, hard_limit_proc) = getrlimit(Resource::RLIMIT_NPROC)?;
+    let soft_limit_proc = (hard_limit_proc.min(4096)).max(256);
+    setrlimit(Resource::RLIMIT_NPROC, soft_limit_proc, hard_limit_proc)?;
+    info!("Set RLIMIT_NPROC to {}", soft_limit_proc);
+
+    Ok(())
+}
+
+/// Drop privileges after binding privileged ports
+fn drop_privileges() -> Result<()> {
+    use nix::unistd::{getuid, getgid, setuid, setgid, Uid, Gid};
+
+    // Only drop if running as root
+    if !getuid().is_root() {
+        return Ok(());
+    }
+
+    // Try to get target user/group from environment or config
+    // Default to "nobody" user/group if available
+    let target_uid = std::env::var("COREVPN_USER")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .map(Uid::from_raw)
+        .or_else(|| {
+            // Try to resolve "nobody" user
+            nix::unistd::User::from_name("nobody")
+                .ok()
+                .flatten()
+                .map(|u| u.uid)
+        });
+
+    let target_gid = std::env::var("COREVPN_GROUP")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .map(Gid::from_raw)
+        .or_else(|| {
+            // Try to resolve "nobody" group
+            nix::unistd::Group::from_name("nobody")
+                .ok()
+                .flatten()
+                .map(|g| g.gid)
+        });
+
+    if let (Some(uid), Some(gid)) = (target_uid, target_gid) {
+        // Set group first, then user
+        setgid(gid)?;
+        setuid(uid)?;
+        info!("Dropped privileges to UID {} GID {}", uid, gid);
+    } else {
+        warn!("Could not drop privileges: target user/group not found");
+    }
+
+    Ok(())
 }

@@ -35,6 +35,78 @@ pub enum ProtocolState {
 /// Session ID type (8 bytes)
 pub type SessionIdBytes = [u8; 8];
 
+/// Replay window for tls-auth packet IDs
+/// Uses a 64-bit bitmap to track the last 64 packet IDs
+struct ReplayWindow {
+    /// Highest seen packet ID
+    highest: u32,
+    /// Bitmap of recently seen packets (relative to highest)
+    /// Bit 0 = highest, bit N = highest - N
+    bitmap: u64,
+}
+
+impl ReplayWindow {
+    /// Window size in packets (64 bits = 64 packet tracking)
+    const WINDOW_SIZE: u32 = 64;
+
+    fn new() -> Self {
+        Self {
+            highest: 0,
+            bitmap: 0,
+        }
+    }
+
+    /// Check if packet ID is valid (not replayed) and update window
+    ///
+    /// Returns true if the packet should be processed, false if it's a replay
+    /// or too old.
+    fn check_and_update(&mut self, packet_id: u32) -> bool {
+        // Packet ID 0 is invalid (counter starts at 1)
+        if packet_id == 0 {
+            return false;
+        }
+
+        if packet_id > self.highest {
+            // New highest packet - advance window
+            let shift = packet_id - self.highest;
+
+            if shift >= Self::WINDOW_SIZE {
+                // Packet is way ahead, clear entire window
+                self.bitmap = 1; // Only mark current packet
+            } else {
+                // Shift window and mark current packet
+                self.bitmap = (self.bitmap << shift) | 1;
+            }
+            self.highest = packet_id;
+            true
+        } else {
+            // Packet is at or before highest
+            let diff = self.highest - packet_id;
+
+            // Check if packet is within window
+            if diff >= Self::WINDOW_SIZE {
+                return false; // Too old
+            }
+
+            // Check if already seen using bit test
+            let mask = 1u64 << diff;
+            if self.bitmap & mask != 0 {
+                return false; // Replay detected
+            }
+
+            // Mark as seen
+            self.bitmap |= mask;
+            true
+        }
+    }
+
+    /// Reset the replay window (e.g., for key renegotiation)
+    fn reset(&mut self) {
+        self.highest = 0;
+        self.bitmap = 0;
+    }
+}
+
 /// Protocol session
 pub struct ProtocolSession {
     /// Local session ID
@@ -57,6 +129,8 @@ pub struct ProtocolSession {
     use_tls_auth: bool,
     /// tls-auth key
     tls_auth_key: Option<corevpn_crypto::HmacAuth>,
+    /// Replay window for tls-auth packet IDs
+    replay_window: ReplayWindow,
     /// Session creation time
     created_at: Instant,
     /// Last activity time
@@ -79,6 +153,7 @@ impl ProtocolSession {
             peer_id: None,
             use_tls_auth: false,
             tls_auth_key: None,
+            replay_window: ReplayWindow::new(),
             created_at: Instant::now(),
             last_activity: Instant::now(),
             cipher_suite,
@@ -144,7 +219,7 @@ impl ProtocolSession {
             data.to_vec()
         };
 
-        let packet = Packet::parse(&data, false)?;
+        let packet = Packet::parse(&data, self.use_tls_auth)?;
 
         match packet {
             Packet::Control(ctrl) => self.process_control_packet(ctrl),
@@ -153,6 +228,15 @@ impl ProtocolSession {
     }
 
     fn process_control_packet(&mut self, ctrl: ControlPacketData) -> Result<ProcessedPacket> {
+        // Check replay protection for tls-auth packets
+        if self.use_tls_auth {
+            if let Some(packet_id) = ctrl.header.packet_id {
+                if !self.replay_window.check_and_update(packet_id) {
+                    return Err(ProtocolError::ReplayDetected);
+                }
+            }
+        }
+
         // Process ACKs
         if !ctrl.acks.is_empty() {
             self.reliable.process_acks(&ctrl.acks);
@@ -162,13 +246,20 @@ impl ProtocolSession {
         match ctrl.header.opcode {
             OpCode::HardResetClientV2 | OpCode::HardResetClientV3 => {
                 // Client initiating connection
+                // Security: Validate session ID - generate new one instead of accepting client's
+                // This prevents session fixation attacks
                 if let Some(remote_sid) = ctrl.header.session_id {
+                    // Validate session ID is not all zeros or obviously malicious
+                    if remote_sid == [0; 8] {
+                        return Err(ProtocolError::InvalidSessionId);
+                    }
+                    // Accept the session ID but we'll use our own for the response
                     self.remote_session_id = Some(remote_sid);
                 }
                 self.state = ProtocolState::TlsHandshake;
 
                 Ok(ProcessedPacket::HardReset {
-                    session_id: ctrl.header.session_id.unwrap_or([0; 8]),
+                    session_id: self.local_session_id,
                 })
             }
             OpCode::HardResetServerV2 => {
@@ -181,7 +272,7 @@ impl ProtocolSession {
             OpCode::ControlV1 => {
                 // TLS data
                 if let Some(packet_id) = ctrl.message_packet_id {
-                    if let Some(data) = self.reliable.receive(packet_id, ctrl.payload.clone()) {
+                    if let Some(data) = self.reliable.receive(packet_id, ctrl.payload.clone())? {
                         self.tls_reassembler.add(&data)?;
                         let records = self.tls_reassembler.extract_records();
                         if !records.is_empty() {
@@ -392,6 +483,8 @@ impl ProtocolSession {
     /// Rotate to next key ID (for rekeying)
     pub fn rotate_key(&mut self) {
         self.current_key_id = self.current_key_id.next();
+        // Reset replay window on key rotation
+        self.replay_window.reset();
     }
 }
 

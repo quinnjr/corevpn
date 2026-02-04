@@ -2,186 +2,164 @@
 //!
 //! Application settings and preferences.
 
-use openkit::prelude::*;
-use crate::state::{AppView, SharedState};
+use eframe::egui;
+
+use crate::state::{AppState, AppView};
+use crate::types::AuthMethod;
 
 /// Build the settings view.
-pub fn build_settings_view(state: SharedState) -> Column {
-    let app_state = state.read();
-    let auth_method = app_state.auth_method;
-    let auto_connect = app_state.auto_connect;
-    let show_notifications = app_state.show_notifications;
-    let remember_credentials = app_state.remember_credentials;
-    drop(app_state);
+pub fn settings_view(ui: &mut egui::Ui, state: &mut AppState) {
+    ui.add_space(8.0);
 
-    let back_state = state.clone();
-    let auto_connect_state = state.clone();
-    let notifications_state = state.clone();
-    let remember_state = state.clone();
-    let auth_oauth_state = state.clone();
-    let auth_password_state = state.clone();
+    // Header with back button
+    ui.horizontal(|ui| {
+        if ui.button("←").clicked() {
+            state.current_view = AppView::Connection;
+        }
+        ui.heading("Settings");
+    });
 
-    Column::new()
-        .gap(20.0)
-        .padding(EdgeInsets::new(16.0, 20.0, 16.0, 20.0))
-        .child(
-            // Header
-            Row::new()
-                .gap(12.0)
-                .align(Alignment::Center)
-                .child(
-                    Button::new("←")
-                        .variant(ButtonVariant::Ghost)
-                        .on_click(move || {
-                            back_state.write().current_view = AppView::Connection;
-                        })
-                )
-                .child(Label::new("Settings").class("view-title"))
-        )
-        // Authentication Section
-        .child(
-            Column::new()
-                .gap(12.0)
-                .child(Label::new("Authentication").class("section-title"))
-                .child(
-                    Card::new()
-                        .variant(CardVariant::Outlined)
-                        .padding(16.0)
-                        .child(
-                            Column::new()
-                                .gap(16.0)
-                                .child(
-                                    Row::new()
-                                        .gap(12.0)
-                                        .align(Alignment::Center)
-                                        .justify(Alignment::SpaceBetween)
-                                        .child(
-                                            Column::new()
-                                                .gap(4.0)
-                                                .child(Label::new("OAuth2/SSO").class("setting-label"))
-                                                .child(Label::new("Sign in with your organization").class("setting-desc"))
-                                        )
-                                        .child(
-                                            ToggleSwitch::new()
-                                                .checked(auth_method == AuthMethod::OAuth2)
-                                                .on_change(move |enabled| {
-                                                    let mut state = auth_oauth_state.write();
-                                                    if enabled {
-                                                        state.auth_method = AuthMethod::OAuth2;
-                                                    }
-                                                })
-                                        )
-                                )
-                                .child(Separator::horizontal())
-                                .child(
-                                    Row::new()
-                                        .gap(12.0)
-                                        .align(Alignment::Center)
-                                        .justify(Alignment::SpaceBetween)
-                                        .child(
-                                            Column::new()
-                                                .gap(4.0)
-                                                .child(Label::new("Username/Password").class("setting-label"))
-                                                .child(Label::new("Traditional credentials").class("setting-desc"))
-                                        )
-                                        .child(
-                                            ToggleSwitch::new()
-                                                .checked(auth_method == AuthMethod::UsernamePassword)
-                                                .on_change(move |enabled| {
-                                                    let mut state = auth_password_state.write();
-                                                    if enabled {
-                                                        state.auth_method = AuthMethod::UsernamePassword;
-                                                    }
-                                                })
-                                        )
-                                )
-                                .child(Separator::horizontal())
-                                .child(
-                                    Row::new()
-                                        .gap(12.0)
-                                        .align(Alignment::Center)
-                                        .justify(Alignment::SpaceBetween)
-                                        .child(
-                                            Column::new()
-                                                .gap(4.0)
-                                                .child(Label::new("Remember Credentials").class("setting-label"))
-                                                .child(Label::new("Save login information").class("setting-desc"))
-                                        )
-                                        .child(
-                                            ToggleSwitch::new()
-                                                .checked(remember_credentials)
-                                                .disabled(auth_method != AuthMethod::UsernamePassword)
-                                                .on_change(move |enabled| {
-                                                    remember_state.write().remember_credentials = enabled;
-                                                })
-                                        )
-                                )
-                        )
-                )
-        )
-        // Connection Section
-        .child(
-            Column::new()
-                .gap(12.0)
-                .child(Label::new("Connection").class("section-title"))
-                .child(
-                    Card::new()
-                        .variant(CardVariant::Outlined)
-                        .padding(16.0)
-                        .child(
-                            Column::new()
-                                .gap(16.0)
-                                .child(
-                                    Row::new()
-                                        .gap(12.0)
-                                        .align(Alignment::Center)
-                                        .justify(Alignment::SpaceBetween)
-                                        .child(
-                                            Column::new()
-                                                .gap(4.0)
-                                                .child(Label::new("Auto-Connect").class("setting-label"))
-                                                .child(Label::new("Connect when app starts").class("setting-desc"))
-                                        )
-                                        .child(
-                                            ToggleSwitch::new()
-                                                .checked(auto_connect)
-                                                .on_change(move |enabled| {
-                                                    auto_connect_state.write().auto_connect = enabled;
-                                                })
-                                        )
-                                )
-                        )
-                )
-        )
-        // Notifications Section
-        .child(
-            Column::new()
-                .gap(12.0)
-                .child(Label::new("Notifications").class("section-title"))
-                .child(
-                    Card::new()
-                        .variant(CardVariant::Outlined)
-                        .padding(16.0)
-                        .child(
-                            Row::new()
-                                .gap(12.0)
-                                .align(Alignment::Center)
-                                .justify(Alignment::SpaceBetween)
-                                .child(
-                                    Column::new()
-                                        .gap(4.0)
-                                        .child(Label::new("Show Notifications").class("setting-label"))
-                                        .child(Label::new("Connection status alerts").class("setting-desc"))
-                                )
-                                .child(
-                                    ToggleSwitch::new()
-                                        .checked(show_notifications)
-                                        .on_change(move |enabled| {
-                                            notifications_state.write().show_notifications = enabled;
-                                        })
-                                )
-                        )
-                )
-        )
-        .class("settings-view")
+    ui.add_space(16.0);
+
+    // Authentication Section
+    ui.label(egui::RichText::new("Authentication").size(14.0).strong());
+    ui.add_space(8.0);
+
+    egui::Frame::new()
+        .fill(ui.visuals().extreme_bg_color)
+        .corner_radius(8.0)
+        .inner_margin(16.0)
+        .show(ui, |ui| {
+            // OAuth2/SSO toggle
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label("OAuth2/SSO");
+                    ui.label(
+                        egui::RichText::new("Sign in with your organization")
+                            .size(11.0)
+                            .color(egui::Color32::GRAY),
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let mut oauth_enabled = state.auth_method == AuthMethod::OAuth2;
+                    if ui.add(egui::Checkbox::without_text(&mut oauth_enabled)).changed() {
+                        if oauth_enabled {
+                            state.auth_method = AuthMethod::OAuth2;
+                        }
+                    }
+                });
+            });
+
+            ui.separator();
+
+            // Username/Password toggle
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label("Username/Password");
+                    ui.label(
+                        egui::RichText::new("Traditional credentials")
+                            .size(11.0)
+                            .color(egui::Color32::GRAY),
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let mut password_enabled = state.auth_method == AuthMethod::UsernamePassword;
+                    if ui
+                        .add(egui::Checkbox::without_text(&mut password_enabled))
+                        .changed()
+                    {
+                        if password_enabled {
+                            state.auth_method = AuthMethod::UsernamePassword;
+                        }
+                    }
+                });
+            });
+
+            ui.separator();
+
+            // Remember credentials toggle
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label("Remember Credentials");
+                    ui.label(
+                        egui::RichText::new("Save login information")
+                            .size(11.0)
+                            .color(egui::Color32::GRAY),
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_enabled(
+                        state.auth_method == AuthMethod::UsernamePassword,
+                        egui::Checkbox::without_text(&mut state.remember_credentials),
+                    );
+                });
+            });
+        });
+
+    ui.add_space(20.0);
+
+    // Connection Section
+    ui.label(egui::RichText::new("Connection").size(14.0).strong());
+    ui.add_space(8.0);
+
+    egui::Frame::new()
+        .fill(ui.visuals().extreme_bg_color)
+        .corner_radius(8.0)
+        .inner_margin(16.0)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label("Auto-Connect");
+                    ui.label(
+                        egui::RichText::new("Connect when app starts")
+                            .size(11.0)
+                            .color(egui::Color32::GRAY),
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.checkbox(&mut state.auto_connect, "");
+                });
+            });
+        });
+
+    ui.add_space(20.0);
+
+    // Notifications Section
+    ui.label(egui::RichText::new("Notifications").size(14.0).strong());
+    ui.add_space(8.0);
+
+    egui::Frame::new()
+        .fill(ui.visuals().extreme_bg_color)
+        .corner_radius(8.0)
+        .inner_margin(16.0)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label("Show Notifications");
+                    ui.label(
+                        egui::RichText::new("Connection status alerts")
+                            .size(11.0)
+                            .color(egui::Color32::GRAY),
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.checkbox(&mut state.show_notifications, "");
+                });
+            });
+        });
+
+    ui.add_space(20.0);
+
+    // Additional navigation
+    ui.horizontal(|ui| {
+        if ui.button("📋 Profiles").clicked() {
+            state.current_view = AppView::Profiles;
+        }
+        if ui.button("📜 Logs").clicked() {
+            state.current_view = AppView::Logs;
+        }
+        if ui.button("ℹ️ About").clicked() {
+            state.current_view = AppView::About;
+        }
+    });
 }

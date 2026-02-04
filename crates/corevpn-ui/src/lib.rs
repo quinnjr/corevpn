@@ -1,7 +1,7 @@
 //! CoreVPN Desktop UI
 //!
 //! A modern VPN client interface similar to OpenVPN Connect,
-//! built with the OpenKit UI framework.
+//! built with the egui UI framework.
 //!
 //! ## Features
 //!
@@ -28,8 +28,10 @@
 pub mod app;
 pub mod config;
 pub mod state;
+pub mod types;
 pub mod views;
 
 pub use app::CoreVpnApp;
 pub use config::UiConfig;
 pub use state::{AppState, AuthState, ConnectionState};
+pub use types::{AuthMethod, ConnectionStats, VpnConnectionStatus, VpnServer};

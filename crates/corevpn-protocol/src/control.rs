@@ -1,9 +1,18 @@
 //! Control Channel Message Types
 
+use std::net::Ipv4Addr;
+
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 use crate::{ProtocolError, Result};
+
+/// Validate that a string is a valid IPv4 address
+fn validate_ipv4(s: &str) -> Result<()> {
+    s.parse::<Ipv4Addr>()
+        .map_err(|_| ProtocolError::InvalidPacket(format!("invalid IPv4 address: {}", s)))?;
+    Ok(())
+}
 
 /// Control channel message types
 #[derive(Debug, Clone)]
@@ -246,25 +255,34 @@ impl PushRoute {
         let mut tokens = s.split_whitespace();
         tokens.next(); // skip "route"
 
-        let network = tokens
+        let network_str = tokens
             .next()
-            .ok_or_else(|| ProtocolError::InvalidPacket("missing network in route".into()))?
-            .to_string();
+            .ok_or_else(|| ProtocolError::InvalidPacket("missing network in route".into()))?;
+        
+        // Validate network address
+        validate_ipv4(network_str)?;
+        let network = network_str.to_string();
 
-        let netmask = tokens
+        let netmask_str = tokens
             .next()
-            .ok_or_else(|| ProtocolError::InvalidPacket("missing netmask in route".into()))?
-            .to_string();
+            .ok_or_else(|| ProtocolError::InvalidPacket("missing netmask in route".into()))?;
+        
+        // Validate netmask
+        validate_ipv4(netmask_str)?;
+        let netmask = netmask_str.to_string();
 
         let gateway = tokens.next().and_then(|g| {
             if g == "vpn_gateway" {
                 None
             } else {
-                Some(g.to_string())
+                // Validate gateway IP address
+                validate_ipv4(g).ok().map(|_| g.to_string())
             }
         });
 
-        let metric = tokens.next().and_then(|m| m.parse().ok());
+        let metric = tokens.next().and_then(|m| {
+            m.parse::<u32>().ok().filter(|&m| m <= 9999) // Reasonable metric limit
+        });
 
         Ok(Self {
             network,
@@ -318,9 +336,19 @@ pub struct AuthMessage {
 }
 
 impl AuthMessage {
+    /// Maximum username length
+    const MAX_USERNAME_LEN: usize = 256;
+    /// Maximum password length
+    const MAX_PASSWORD_LEN: usize = 1024;
+
     /// Parse from OpenVPN auth data
     pub fn parse(data: &[u8]) -> Result<Self> {
         // Format: username\0password\0
+        // Security: Limit total input size to prevent DoS
+        if data.len() > Self::MAX_USERNAME_LEN + Self::MAX_PASSWORD_LEN + 2 {
+            return Err(ProtocolError::InvalidPacket("auth data too long".into()));
+        }
+
         let s = std::str::from_utf8(data)
             .map_err(|_| ProtocolError::InvalidPacket("invalid UTF-8 in auth".into()))?;
 
@@ -329,9 +357,24 @@ impl AuthMessage {
             return Err(ProtocolError::InvalidPacket("missing auth fields".into()));
         }
 
+        let username = parts[0];
+        let password = parts[1];
+
+        // Validate lengths
+        if username.len() > Self::MAX_USERNAME_LEN {
+            return Err(ProtocolError::InvalidPacket(
+                format!("username too long (max {} bytes)", Self::MAX_USERNAME_LEN).into(),
+            ));
+        }
+        if password.len() > Self::MAX_PASSWORD_LEN {
+            return Err(ProtocolError::InvalidPacket(
+                format!("password too long (max {} bytes)", Self::MAX_PASSWORD_LEN).into(),
+            ));
+        }
+
         Ok(Self {
-            username: parts[0].to_string(),
-            password: parts[1].to_string(),
+            username: username.to_string(),
+            password: password.to_string(),
         })
     }
 

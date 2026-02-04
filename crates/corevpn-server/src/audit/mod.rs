@@ -135,11 +135,11 @@ pub struct AuditConfig {
     pub default_format: FormatConfig,
 
     /// Include source IP in events
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub include_source_ip: bool,
 
     /// Include user identity in events
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub include_user_identity: bool,
 
     /// Hash sensitive fields for privacy
@@ -154,6 +154,7 @@ pub struct AuditConfig {
 fn default_enabled() -> bool { true }
 fn default_buffer_size() -> usize { 10000 }
 fn default_true() -> bool { true }
+fn default_false() -> bool { false }
 fn default_categories() -> Vec<AuditCategory> {
     vec![
         AuditCategory::Authentication,
@@ -171,8 +172,8 @@ impl Default for AuditConfig {
             buffer_size: 10000,
             sinks: Vec::new(),
             default_format: FormatConfig::default(),
-            include_source_ip: true,
-            include_user_identity: true,
+            include_source_ip: false,
+            include_user_identity: false,
             hash_sensitive_fields: false,
             categories: default_categories(),
         }

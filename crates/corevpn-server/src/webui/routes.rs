@@ -14,8 +14,12 @@ use axum::{
 use serde::Deserialize;
 
 use super::auth;
+use super::csrf;
 use super::state::WebUiState;
 use super::templates;
+use axum::extract::Request;
+use axum::http::header;
+use axum::middleware::Next;
 
 /// Create the web UI router with authentication
 pub fn create_router(state: WebUiState) -> Router {
@@ -49,6 +53,8 @@ pub fn create_router(state: WebUiState) -> Router {
 
         // Apply authentication middleware to all admin routes
         .layer(middleware::from_fn(auth::require_auth))
+        .layer(middleware::from_fn(csrf_middleware))
+        .layer(middleware::from_fn(csp_middleware))
         .with_state(state);
 
     // Combine with fallback (fallback doesn't need auth)
@@ -84,16 +90,23 @@ async fn dashboard(State(state): State<WebUiState>) -> Html<String> {
     Html(html)
 }
 
-async fn clients_list(State(_state): State<WebUiState>) -> Html<String> {
+async fn clients_list(State(state): State<WebUiState>) -> Html<String> {
     // In a real implementation, this would fetch from the database
     // For now, show empty list
     let clients: Vec<templates::ClientInfo> = vec![];
+    
+    // Generate CSRF token for forms
+    let session_id = get_session_id_from_state(&state);
+    let csrf_token = csrf::generate_token(&session_id);
 
-    Html(templates::clients_list(&clients))
+    Html(templates::clients_list(&clients, &csrf_token))
 }
 
-async fn new_client_form() -> Html<String> {
-    Html(templates::new_client())
+async fn new_client_form(State(state): State<WebUiState>) -> Html<String> {
+    // Generate CSRF token for this session
+    let session_id = get_session_id_from_state(&state);
+    let csrf_token = csrf::generate_token(&session_id);
+    Html(templates::new_client(&csrf_token))
 }
 
 #[derive(Deserialize)]
@@ -102,6 +115,7 @@ struct CreateClientForm {
     email: String,
     #[serde(default = "default_expires")]
     expires: u32,
+    csrf_token: String,
 }
 
 fn default_expires() -> u32 {
@@ -112,22 +126,45 @@ async fn create_client(
     State(state): State<WebUiState>,
     Form(form): Form<CreateClientForm>,
 ) -> Response {
+    // Validate CSRF token
+    let session_id = get_session_id_from_state(&state);
+    if !csrf::validate_token(&session_id, &form.csrf_token) {
+        return error_response(403, "Invalid CSRF token");
+    }
+
+    // Validate and sanitize input
+    let name = sanitize_filename(&form.name);
+    let email = sanitize_email(&form.email);
+    
+    if name.is_empty() || name.len() > 64 {
+        return error_response(400, "Invalid client name");
+    }
+
     use corevpn_config::generator::ConfigGenerator;
     use corevpn_crypto::CertificateAuthority;
 
     // Load CA
     let ca_cert = match std::fs::read_to_string(state.config.ca_cert_path()) {
         Ok(c) => c,
-        Err(e) => return error_response(500, &format!("Failed to read CA: {}", e)),
+        Err(e) => {
+            tracing::error!("Failed to read CA cert: {}", e);
+            return error_response(500, "Failed to read CA certificate");
+        }
     };
     let ca_key = match std::fs::read_to_string(state.config.ca_key_path()) {
         Ok(k) => k,
-        Err(e) => return error_response(500, &format!("Failed to read CA key: {}", e)),
+        Err(e) => {
+            tracing::error!("Failed to read CA key: {}", e);
+            return error_response(500, "Failed to read CA key");
+        }
     };
 
     let ca = match CertificateAuthority::from_pem(&ca_cert, &ca_key) {
         Ok(ca) => ca,
-        Err(e) => return error_response(500, &format!("Failed to load CA: {}", e)),
+        Err(e) => {
+            tracing::error!("Failed to load CA: {}", e);
+            return error_response(500, "Failed to load CA");
+        }
     };
 
     // Load tls-auth key
@@ -137,16 +174,19 @@ async fn create_client(
     let config = (*state.config).clone();
     let generator = ConfigGenerator::new(config, ca, ta_key);
 
-    let generated = match generator.generate_client_config(&form.name, Some(&form.email)) {
+    let generated = match generator.generate_client_config(&name, Some(&email)) {
         Ok(g) => g,
-        Err(e) => return error_response(500, &format!("Failed to generate config: {}", e)),
+        Err(e) => {
+            tracing::error!("Failed to generate config: {}", e);
+            return error_response(500, "Failed to generate configuration");
+        }
     };
 
-    let filename = generated.filename();
+    let filename = sanitize_filename_for_download(&generated.filename());
     let ovpn_content = generated.ovpn_content;
 
     // Show download page with auto-download and config preview
-    let html = templates::client_download(&form.name, &filename, &ovpn_content);
+    let html = templates::client_download(&name, &filename, &ovpn_content);
     Html(html).into_response()
 }
 
@@ -154,6 +194,12 @@ async fn download_client_config(
     State(state): State<WebUiState>,
     Path(id): Path<String>,
 ) -> Response {
+    // Validate and sanitize path parameter
+    let id = sanitize_path_param(&id);
+    if id.is_empty() || id.len() > 64 {
+        return error_response(400, "Invalid client ID");
+    }
+
     use corevpn_config::generator::ConfigGenerator;
     use corevpn_crypto::CertificateAuthority;
     use axum::http::header;
@@ -161,16 +207,25 @@ async fn download_client_config(
     // Load CA
     let ca_cert = match std::fs::read_to_string(state.config.ca_cert_path()) {
         Ok(c) => c,
-        Err(e) => return error_response(500, &format!("Failed to read CA: {}", e)),
+        Err(e) => {
+            tracing::error!("Failed to read CA cert: {}", e);
+            return error_response(500, "Failed to read CA certificate");
+        }
     };
     let ca_key = match std::fs::read_to_string(state.config.ca_key_path()) {
         Ok(k) => k,
-        Err(e) => return error_response(500, &format!("Failed to read CA key: {}", e)),
+        Err(e) => {
+            tracing::error!("Failed to read CA key: {}", e);
+            return error_response(500, "Failed to read CA key");
+        }
     };
 
     let ca = match CertificateAuthority::from_pem(&ca_cert, &ca_key) {
         Ok(ca) => ca,
-        Err(e) => return error_response(500, &format!("Failed to load CA: {}", e)),
+        Err(e) => {
+            tracing::error!("Failed to load CA: {}", e);
+            return error_response(500, "Failed to load CA");
+        }
     };
 
     let ta_key = std::fs::read_to_string(state.config.ta_key_path()).ok();
@@ -180,10 +235,13 @@ async fn download_client_config(
 
     let generated = match generator.generate_client_config(&id, Some(&id)) {
         Ok(g) => g,
-        Err(e) => return error_response(500, &format!("Failed to generate config: {}", e)),
+        Err(e) => {
+            tracing::error!("Failed to generate config: {}", e);
+            return error_response(500, "Failed to generate configuration");
+        }
     };
 
-    let filename = generated.filename();
+    let filename = sanitize_filename_for_download(&generated.filename());
     let content = generated.ovpn_content;
 
     Response::builder()
@@ -194,10 +252,28 @@ async fn download_client_config(
         .unwrap_or_else(|_| error_response(500, "Failed to build response"))
 }
 
+#[derive(Deserialize)]
+struct RevokeClientForm {
+    csrf_token: String,
+}
+
 async fn revoke_client(
-    State(_state): State<WebUiState>,
-    Path(_id): Path<String>,
+    State(state): State<WebUiState>,
+    Path(id): Path<String>,
+    Form(form): Form<RevokeClientForm>,
 ) -> Redirect {
+    // Validate CSRF token
+    let session_id = get_session_id_from_state(&state);
+    if !csrf::validate_token(&session_id, &form.csrf_token) {
+        return Redirect::to("/admin/clients?error=csrf");
+    }
+
+    // Validate path parameter
+    let id = sanitize_path_param(&id);
+    if id.is_empty() {
+        return Redirect::to("/admin/clients?error=invalid_id");
+    }
+
     // In a real implementation, this would revoke the client certificate
     // For now, just redirect back
     Redirect::to("/admin/clients")
@@ -208,6 +284,12 @@ async fn download_client_config_mobile(
     State(state): State<WebUiState>,
     Path(id): Path<String>,
 ) -> Response {
+    // Validate and sanitize path parameter
+    let id = sanitize_path_param(&id);
+    if id.is_empty() || id.len() > 64 {
+        return error_response(400, "Invalid client ID");
+    }
+
     use corevpn_config::generator::ConfigGenerator;
     use corevpn_crypto::CertificateAuthority;
     use axum::http::header;
@@ -215,16 +297,25 @@ async fn download_client_config_mobile(
     // Load CA
     let ca_cert = match std::fs::read_to_string(state.config.ca_cert_path()) {
         Ok(c) => c,
-        Err(e) => return error_response(500, &format!("Failed to read CA: {}", e)),
+        Err(e) => {
+            tracing::error!("Failed to read CA cert: {}", e);
+            return error_response(500, "Failed to read CA certificate");
+        }
     };
     let ca_key = match std::fs::read_to_string(state.config.ca_key_path()) {
         Ok(k) => k,
-        Err(e) => return error_response(500, &format!("Failed to read CA key: {}", e)),
+        Err(e) => {
+            tracing::error!("Failed to read CA key: {}", e);
+            return error_response(500, "Failed to read CA key");
+        }
     };
 
     let ca = match CertificateAuthority::from_pem(&ca_cert, &ca_key) {
         Ok(ca) => ca,
-        Err(e) => return error_response(500, &format!("Failed to load CA: {}", e)),
+        Err(e) => {
+            tracing::error!("Failed to load CA: {}", e);
+            return error_response(500, "Failed to load CA");
+        }
     };
 
     let ta_key = std::fs::read_to_string(state.config.ta_key_path()).ok();
@@ -235,10 +326,14 @@ async fn download_client_config_mobile(
     // Generate mobile-optimized config
     let generated = match generator.generate_mobile_config(&id, Some(&id)) {
         Ok(g) => g,
-        Err(e) => return error_response(500, &format!("Failed to generate config: {}", e)),
+        Err(e) => {
+            tracing::error!("Failed to generate mobile config: {}", e);
+            return error_response(500, "Failed to generate configuration");
+        }
     };
 
-    let filename = format!("{}-mobile.ovpn", id.replace(['@', '.', ' '], "_"));
+    let safe_id = id.replace(['@', '.', ' '], "_");
+    let filename = sanitize_filename_for_download(&format!("{}-mobile.ovpn", safe_id));
     let content = generated.ovpn_content;
 
     Response::builder()
@@ -250,8 +345,10 @@ async fn download_client_config_mobile(
 }
 
 /// Quick generate form - simple one-field form for fast config generation
-async fn quick_generate_form() -> Html<String> {
-    Html(templates::quick_generate())
+async fn quick_generate_form(State(state): State<WebUiState>) -> Html<String> {
+    let session_id = get_session_id_from_state(&state);
+    let csrf_token = csrf::generate_token(&session_id);
+    Html(templates::quick_generate(&csrf_token))
 }
 
 /// Quick generate and immediate download
@@ -260,18 +357,25 @@ struct QuickGenerateForm {
     name: String,
     #[serde(default)]
     mobile: bool,
+    csrf_token: String,
 }
 
 async fn quick_generate_download(
     State(state): State<WebUiState>,
     Form(form): Form<QuickGenerateForm>,
 ) -> Response {
+    // Validate CSRF token
+    let session_id = get_session_id_from_state(&state);
+    if !csrf::validate_token(&session_id, &form.csrf_token) {
+        return error_response(403, "Invalid CSRF token");
+    }
+
     use corevpn_config::generator::ConfigGenerator;
     use corevpn_crypto::CertificateAuthority;
     use axum::http::header;
 
-    // Validate name
-    let name = form.name.trim();
+    // Validate and sanitize name
+    let name = sanitize_filename(&form.name.trim().to_string());
     if name.is_empty() || name.len() > 64 {
         return error_response(400, "Invalid client name. Must be 1-64 characters.");
     }
@@ -279,16 +383,25 @@ async fn quick_generate_download(
     // Load CA
     let ca_cert = match std::fs::read_to_string(state.config.ca_cert_path()) {
         Ok(c) => c,
-        Err(e) => return error_response(500, &format!("Failed to read CA: {}", e)),
+        Err(e) => {
+            tracing::error!("Failed to read CA cert: {}", e);
+            return error_response(500, "Failed to read CA certificate");
+        }
     };
     let ca_key = match std::fs::read_to_string(state.config.ca_key_path()) {
         Ok(k) => k,
-        Err(e) => return error_response(500, &format!("Failed to read CA key: {}", e)),
+        Err(e) => {
+            tracing::error!("Failed to read CA key: {}", e);
+            return error_response(500, "Failed to read CA key");
+        }
     };
 
     let ca = match CertificateAuthority::from_pem(&ca_cert, &ca_key) {
         Ok(ca) => ca,
-        Err(e) => return error_response(500, &format!("Failed to load CA: {}", e)),
+        Err(e) => {
+            tracing::error!("Failed to load CA: {}", e);
+            return error_response(500, "Failed to load CA");
+        }
     };
 
     let ta_key = std::fs::read_to_string(state.config.ta_key_path()).ok();
@@ -298,20 +411,24 @@ async fn quick_generate_download(
 
     // Generate config (mobile or standard)
     let generated = if form.mobile {
-        generator.generate_mobile_config(name, None)
+        generator.generate_mobile_config(&name, None)
     } else {
-        generator.generate_client_config(name, None)
+        generator.generate_client_config(&name, None)
     };
 
     let generated = match generated {
         Ok(g) => g,
-        Err(e) => return error_response(500, &format!("Failed to generate config: {}", e)),
+        Err(e) => {
+            tracing::error!("Failed to generate config: {}", e);
+            return error_response(500, "Failed to generate configuration");
+        }
     };
 
     let filename = if form.mobile {
-        format!("{}-mobile.ovpn", name.replace(['@', '.', ' '], "_"))
+        let safe_name = name.replace(['@', '.', ' '], "_");
+        sanitize_filename_for_download(&format!("{}-mobile.ovpn", safe_name))
     } else {
-        generated.filename()
+        sanitize_filename_for_download(&generated.filename())
     };
     let content = generated.ovpn_content;
 
@@ -350,13 +467,35 @@ async fn sessions_list(State(state): State<WebUiState>) -> Html<String> {
         })
         .collect();
 
-    Html(templates::sessions_list(&session_infos))
+    // Generate CSRF token for forms
+    let session_id = get_session_id_from_state(&state);
+    let csrf_token = csrf::generate_token(&session_id);
+
+    Html(templates::sessions_list(&session_infos, &csrf_token))
+}
+
+#[derive(Deserialize)]
+struct DisconnectSessionForm {
+    csrf_token: String,
 }
 
 async fn disconnect_session(
     State(state): State<WebUiState>,
     Path(id): Path<String>,
+    Form(form): Form<DisconnectSessionForm>,
 ) -> Redirect {
+    // Validate CSRF token
+    let session_id = get_session_id_from_state(&state);
+    if !csrf::validate_token(&session_id, &form.csrf_token) {
+        return Redirect::to("/admin/sessions?error=csrf");
+    }
+
+    // Validate path parameter
+    let id = sanitize_path_param(&id);
+    if id.is_empty() {
+        return Redirect::to("/admin/sessions?error=invalid_id");
+    }
+
     use corevpn_core::SessionId;
 
     // Parse UUID and remove session
@@ -369,7 +508,21 @@ async fn disconnect_session(
     Redirect::to("/admin/sessions")
 }
 
-async fn disconnect_all_sessions(State(state): State<WebUiState>) -> Redirect {
+#[derive(Deserialize)]
+struct DisconnectAllForm {
+    csrf_token: String,
+}
+
+async fn disconnect_all_sessions(
+    State(state): State<WebUiState>,
+    Form(form): Form<DisconnectAllForm>,
+) -> Redirect {
+    // Validate CSRF token
+    let session_id = get_session_id_from_state(&state);
+    if !csrf::validate_token(&session_id, &form.csrf_token) {
+        return Redirect::to("/admin/sessions?error=csrf");
+    }
+
     // Get all session IDs and remove them
     let session_ids: Vec<_> = {
         let sm = state.session_manager.read();
@@ -391,6 +544,10 @@ async fn settings_page(State(state): State<WebUiState>) -> Html<String> {
         .map(|o| (o.enabled, Some(o.provider.as_str())))
         .unwrap_or((false, None));
 
+    // Generate CSRF token for forms
+    let session_id = get_session_id_from_state(&state);
+    let csrf_token = csrf::generate_token(&session_id);
+
     let html = templates::settings(
         &config.server.public_host,
         config.server.listen_addr.port(),
@@ -399,6 +556,7 @@ async fn settings_page(State(state): State<WebUiState>) -> Html<String> {
         config.server.max_clients,
         oauth_enabled,
         oauth_provider,
+        &csrf_token,
     );
 
     Html(html)
@@ -413,10 +571,134 @@ async fn not_found() -> Html<String> {
 // ============================================================================
 
 fn error_response(status: u16, message: &str) -> Response {
-    let html = templates::error_page(status, message);
+    // Sanitize error message - don't expose internal details
+    let safe_message = match status {
+        500 => "An internal error occurred. Please try again later.",
+        _ => message,
+    };
+    
+    let html = templates::error_page(status, safe_message);
     let status_code = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
     (status_code, Html(html)).into_response()
+}
+
+// ============================================================================
+// Security Helpers
+// ============================================================================
+
+/// Get session ID from state (simplified - uses a hash of config)
+fn get_session_id_from_state(_state: &WebUiState) -> String {
+    // In a real implementation, you'd use a proper session cookie
+    // For now, use a simple identifier
+    "default".to_string()
+}
+
+/// Sanitize filename for use in Content-Disposition header
+fn sanitize_filename_for_download(filename: &str) -> String {
+    // Remove path separators and control characters
+    filename
+        .chars()
+        .filter(|c| {
+            !matches!(c, '/' | '\\' | '\0'..='\x1f' | '\x7f'..='\u{9f}')
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
+        .chars()
+        .take(255) // Limit length
+        .collect()
+}
+
+/// Sanitize filename input
+fn sanitize_filename(input: &str) -> String {
+    input
+        .chars()
+        .filter(|c| {
+            c.is_alphanumeric() || matches!(c, '-' | '_' | '.')
+        })
+        .take(64)
+        .collect()
+}
+
+/// Sanitize email input
+fn sanitize_email(input: &str) -> String {
+    input
+        .chars()
+        .filter(|c| {
+            c.is_alphanumeric() || matches!(c, '@' | '.' | '-' | '_' | '+')
+        })
+        .take(255)
+        .collect()
+}
+
+/// Sanitize path parameter
+fn sanitize_path_param(input: &str) -> String {
+    // Remove path traversal attempts and control characters
+    input
+        .chars()
+        .filter(|c| {
+            !matches!(c, '/' | '\\' | '.' | '\0'..='\x1f' | '\x7f'..='\u{9f}')
+        })
+        .take(64)
+        .collect()
+}
+
+/// CSRF middleware - validate CSRF tokens on POST requests
+async fn csrf_middleware(request: Request, next: Next) -> Response {
+    // For GET requests, just pass through
+    if request.method() == axum::http::Method::GET {
+        return next.run(request).await;
+    }
+
+    // For POST requests, we would validate the CSRF token here
+    // In a full implementation, this would check a token from the form against a session token
+    // For now, we pass through since we have Basic Auth protection
+    // TODO: Implement full CSRF token validation when session-based auth is added
+    next.run(request).await
+}
+
+/// CSP middleware - add Content-Security-Policy headers
+async fn csp_middleware(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    
+    // Add strict CSP header
+    let csp = "default-src 'self'; \
+               script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://fonts.googleapis.com; \
+               style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://fonts.googleapis.com; \
+               font-src 'self' https://fonts.gstatic.com; \
+               img-src 'self' data:; \
+               connect-src 'self'; \
+               frame-ancestors 'none'; \
+               base-uri 'self'; \
+               form-action 'self'";
+    
+    if let Ok(header_value) = header::HeaderValue::from_str(csp) {
+        response.headers_mut().insert(header::CONTENT_SECURITY_POLICY, header_value);
+    }
+    
+    // Add other security headers
+    response.headers_mut().insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        header::HeaderValue::from_static("nosniff"),
+    );
+    
+    response.headers_mut().insert(
+        header::X_FRAME_OPTIONS,
+        header::HeaderValue::from_static("DENY"),
+    );
+    
+    response.headers_mut().insert(
+        header::X_XSS_PROTECTION,
+        header::HeaderValue::from_static("1; mode=block"),
+    );
+    
+    response.headers_mut().insert(
+        header::REFERRER_POLICY,
+        header::HeaderValue::from_static("strict-origin-when-cross-origin"),
+    );
+    
+    response
 }
 
 fn format_data_usage(rx: u64, tx: u64) -> String {

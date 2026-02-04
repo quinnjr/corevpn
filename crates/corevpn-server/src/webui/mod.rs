@@ -13,6 +13,7 @@
 //! ```
 
 pub mod auth;
+pub mod csrf;
 pub mod templates;
 pub mod routes;
 pub mod state;

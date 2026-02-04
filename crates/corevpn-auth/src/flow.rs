@@ -5,8 +5,13 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use secrecy::ExposeSecret;
+use tracing::{debug, warn};
 
 use crate::{AuthError, OAuthProvider, Result, TokenSet};
+use crate::session::RateLimiter;
+use std::sync::Arc;
+use parking_lot::RwLock;
 
 /// Authentication state (for CSRF protection)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,7 +39,8 @@ impl AuthState {
             nonce: Uuid::new_v4().to_string(),
             code_verifier: Self::generate_code_verifier(),
             created_at: now,
-            expires_at: now + chrono::Duration::from_std(lifetime).unwrap(),
+            expires_at: now + chrono::Duration::from_std(lifetime)
+                .unwrap_or_else(|_| chrono::Duration::seconds(600)), // Fallback to 10 minutes
             metadata: HashMap::new(),
         }
     }
@@ -70,6 +76,8 @@ pub struct AuthFlow {
     provider: OAuthProvider,
     /// Redirect URI
     redirect_uri: String,
+    /// Rate limiter for authentication attempts
+    rate_limiter: Arc<RwLock<RateLimiter>>,
 }
 
 impl AuthFlow {
@@ -78,6 +86,19 @@ impl AuthFlow {
         Self {
             provider,
             redirect_uri: redirect_uri.to_string(),
+            rate_limiter: Arc::new(RwLock::new(RateLimiter::new(
+                5, // 5 attempts
+                std::time::Duration::from_secs(300), // per 5 minutes
+            ))),
+        }
+    }
+
+    /// Create a new auth flow with custom rate limiter
+    pub fn with_rate_limiter(provider: OAuthProvider, redirect_uri: &str, rate_limiter: RateLimiter) -> Self {
+        Self {
+            provider,
+            redirect_uri: redirect_uri.to_string(),
+            rate_limiter: Arc::new(RwLock::new(rate_limiter)),
         }
     }
 
@@ -130,13 +151,14 @@ impl AuthFlow {
         let endpoint = self.provider.token_endpoint()?;
         let config = self.provider.config();
 
+        let client_secret = config.client_secret.expose_secret();
         let params = [
             ("grant_type", "authorization_code"),
-            ("client_id", &config.client_id),
-            ("client_secret", &config.client_secret),
+            ("client_id", config.client_id.as_str()),
+            ("client_secret", client_secret.as_str()),
             ("code", code),
-            ("redirect_uri", &self.redirect_uri),
-            ("code_verifier", &state.code_verifier),
+            ("redirect_uri", self.redirect_uri.as_str()),
+            ("code_verifier", state.code_verifier.as_str()),
         ];
 
         let client = reqwest::Client::new();
@@ -144,11 +166,17 @@ impl AuthFlow {
             .post(endpoint)
             .form(&params)
             .send()
-            .await?;
+            .await
+            .map_err(|e| {
+                warn!("Token exchange request failed: {}", e);
+                AuthError::OAuth2Error("Authentication failed".into())
+            })?;
 
         if !response.status().is_success() {
+            let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(AuthError::OAuth2Error(error_text));
+            warn!("Token exchange failed with status {}: {}", status, error_text);
+            return Err(AuthError::OAuth2Error("Authentication failed".into()));
         }
 
         let token_response: TokenResponse = response.json().await?;
@@ -171,10 +199,11 @@ impl AuthFlow {
         let endpoint = self.provider.token_endpoint()?;
         let config = self.provider.config();
 
+        let client_secret = config.client_secret.expose_secret();
         let params = [
             ("grant_type", "refresh_token"),
-            ("client_id", &config.client_id),
-            ("client_secret", &config.client_secret),
+            ("client_id", config.client_id.as_str()),
+            ("client_secret", client_secret.as_str()),
             ("refresh_token", refresh_token),
         ];
 
@@ -183,11 +212,17 @@ impl AuthFlow {
             .post(endpoint)
             .form(&params)
             .send()
-            .await?;
+            .await
+            .map_err(|e| {
+                warn!("Token refresh request failed: {}", e);
+                AuthError::TokenRefreshFailed("Token refresh failed".into())
+            })?;
 
         if !response.status().is_success() {
+            let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(AuthError::TokenRefreshFailed(error_text));
+            warn!("Token refresh failed with status {}: {}", status, error_text);
+            return Err(AuthError::TokenRefreshFailed("Token refresh failed".into()));
         }
 
         let token_response: TokenResponse = response.json().await?;
@@ -210,16 +245,30 @@ impl AuthFlow {
 pub struct DeviceAuthFlow {
     /// Provider
     provider: OAuthProvider,
+    /// Rate limiter for device auth attempts
+    rate_limiter: Arc<RwLock<RateLimiter>>,
 }
 
 impl DeviceAuthFlow {
     /// Create a new device auth flow
     pub fn new(provider: OAuthProvider) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            rate_limiter: Arc::new(RwLock::new(RateLimiter::new(
+                10, // 10 attempts
+                std::time::Duration::from_secs(600), // per 10 minutes
+            ))),
+        }
     }
 
     /// Start device authorization
-    pub async fn start(&self) -> Result<DeviceAuthResponse> {
+    pub async fn start(&self, client_ip: Option<&str>) -> Result<DeviceAuthResponse> {
+        // Rate limit device auth attempts
+        let rate_limit_key = client_ip.unwrap_or("unknown");
+        if !self.rate_limiter.read().check(rate_limit_key) {
+            return Err(AuthError::OAuth2Error("Too many device authorization attempts".into()));
+        }
+
         let endpoint = self.provider.device_authorization_endpoint()?;
         let config = self.provider.config();
 
@@ -237,8 +286,10 @@ impl DeviceAuthFlow {
             .await?;
 
         if !response.status().is_success() {
+            let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(AuthError::OAuth2Error(error_text));
+            warn!("Device authorization failed with status {}: {}", status, error_text);
+            return Err(AuthError::OAuth2Error("Device authorization failed".into()));
         }
 
         let device_response: DeviceAuthResponse = response.json().await?;
@@ -246,14 +297,21 @@ impl DeviceAuthFlow {
     }
 
     /// Poll for token (call repeatedly until success or error)
-    pub async fn poll(&self, device_code: &str) -> Result<TokenSet> {
+    pub async fn poll(&self, device_code: &str, client_ip: Option<&str>) -> Result<TokenSet> {
+        // Rate limit polling attempts
+        let rate_limit_key = client_ip.unwrap_or(device_code);
+        if !self.rate_limiter.read().check(rate_limit_key) {
+            return Err(AuthError::OAuth2Error("Too many polling attempts".into()));
+        }
+
         let endpoint = self.provider.token_endpoint()?;
         let config = self.provider.config();
 
+        let client_secret = config.client_secret.expose_secret();
         let params = [
             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-            ("client_id", &config.client_id),
-            ("client_secret", &config.client_secret),
+            ("client_id", config.client_id.as_str()),
+            ("client_secret", client_secret.as_str()),
             ("device_code", device_code),
         ];
 
@@ -265,15 +323,20 @@ impl DeviceAuthFlow {
             .await?;
 
         if !response.status().is_success() {
-            let error_response: ErrorResponse = response.json().await?;
+            let error_response: ErrorResponse = response.json().await
+                .map_err(|e| {
+                    warn!("Failed to parse error response: {}", e);
+                    AuthError::OAuth2Error("Device authorization failed".into())
+                })?;
 
             return match error_response.error.as_str() {
                 "authorization_pending" => Err(AuthError::AuthorizationPending),
                 "slow_down" => Err(AuthError::AuthorizationPending),
                 "expired_token" => Err(AuthError::DeviceAuthExpired),
-                _ => Err(AuthError::OAuth2Error(
-                    error_response.error_description.unwrap_or(error_response.error),
-                )),
+                _ => {
+                    warn!("Device auth error: {}", error_response.error);
+                    Err(AuthError::OAuth2Error("Device authorization failed".into()))
+                }
             };
         }
 

@@ -2,6 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr};
+use secrecy::{ExposeSecret, Secret, SecretString};
+use tracing::{debug, warn};
+use url::Url;
 
 use crate::{AuthError, Result};
 
@@ -31,15 +35,14 @@ impl std::fmt::Display for ProviderType {
 }
 
 /// Provider configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct ProviderConfig {
     /// Provider type
     pub provider_type: ProviderType,
     /// OAuth2 Client ID
     pub client_id: String,
     /// OAuth2 Client Secret (encrypted at rest)
-    #[serde(skip_serializing)]
-    pub client_secret: String,
+    pub client_secret: SecretString,
     /// Issuer URL (for OIDC discovery)
     pub issuer_url: String,
     /// Authorization endpoint (optional, discovered via OIDC)
@@ -74,7 +77,7 @@ impl ProviderConfig {
         let mut config = Self {
             provider_type: ProviderType::Google,
             client_id: client_id.to_string(),
-            client_secret: client_secret.to_string(),
+            client_secret: SecretString::new(client_secret.to_string()),
             issuer_url: "https://accounts.google.com".to_string(),
             authorization_endpoint: Some("https://accounts.google.com/o/oauth2/v2/auth".to_string()),
             token_endpoint: Some("https://oauth2.googleapis.com/token".to_string()),
@@ -110,7 +113,7 @@ impl ProviderConfig {
         Self {
             provider_type: ProviderType::Microsoft,
             client_id: client_id.to_string(),
-            client_secret: client_secret.to_string(),
+            client_secret: SecretString::new(client_secret.to_string()),
             issuer_url: format!("{}/v2.0", base_url),
             authorization_endpoint: Some(format!("{}/oauth2/v2.0/authorize", base_url)),
             token_endpoint: Some(format!("{}/oauth2/v2.0/token", base_url)),
@@ -140,7 +143,7 @@ impl ProviderConfig {
         Self {
             provider_type: ProviderType::Okta,
             client_id: client_id.to_string(),
-            client_secret: client_secret.to_string(),
+            client_secret: SecretString::new(client_secret.to_string()),
             issuer_url: base_url.clone(),
             authorization_endpoint: Some(format!("{}/v1/authorize", base_url)),
             token_endpoint: Some(format!("{}/v1/token", base_url)),
@@ -168,7 +171,7 @@ impl ProviderConfig {
         Self {
             provider_type: ProviderType::Generic,
             client_id: client_id.to_string(),
-            client_secret: client_secret.to_string(),
+            client_secret: SecretString::new(client_secret.to_string()),
             issuer_url: issuer_url.to_string(),
             authorization_endpoint: None,
             token_endpoint: None,
@@ -194,7 +197,7 @@ impl ProviderConfig {
         if self.client_id.is_empty() {
             return Err(AuthError::ConfigError("client_id is required".into()));
         }
-        if self.client_secret.is_empty() {
+        if self.client_secret.expose_secret().is_empty() {
             return Err(AuthError::ConfigError("client_secret is required".into()));
         }
         if self.issuer_url.is_empty() {
@@ -233,6 +236,84 @@ pub struct OidcMetadata {
     pub grant_types_supported: Vec<String>,
 }
 
+/// Check if an IP address is in a private range
+fn is_private_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ipv4) => {
+            let octets = ipv4.octets();
+            // 10.0.0.0/8
+            (octets[0] == 10) ||
+            // 172.16.0.0/12
+            (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31) ||
+            // 192.168.0.0/16
+            (octets[0] == 192 && octets[1] == 168) ||
+            // 127.0.0.0/8 (loopback)
+            (octets[0] == 127) ||
+            // 169.254.0.0/16 (link-local)
+            (octets[0] == 169 && octets[1] == 254) ||
+            // 0.0.0.0/8
+            (octets[0] == 0)
+        }
+        IpAddr::V6(ipv6) => {
+            // ::1 (loopback)
+            ipv6.is_loopback() ||
+            // fe80::/10 (link-local)
+            ipv6.is_unicast_link_local() ||
+            // fc00::/7 (unique local)
+            (ipv6.segments()[0] & 0xfe00) == 0xfc00
+        }
+    }
+}
+
+/// Validate URL for SSRF protection
+fn validate_url_for_ssrf(url_str: &str) -> Result<()> {
+    let url = Url::parse(url_str)
+        .map_err(|e| AuthError::ConfigError(format!("Invalid URL: {}", e)))?;
+
+    // Only allow HTTPS
+    if url.scheme() != "https" {
+        return Err(AuthError::ConfigError(
+            "Only HTTPS URLs are allowed for security".into()
+        ));
+    }
+
+    // Resolve hostname and check for private IPs
+    if let Some(host) = url.host() {
+        match host {
+            url::Host::Domain(domain) => {
+                // Block localhost variants
+                if domain == "localhost" || domain.ends_with(".localhost") {
+                    return Err(AuthError::ConfigError(
+                        "localhost URLs are not allowed".into()
+                    ));
+                }
+                // Block .local domains (mDNS)
+                if domain.ends_with(".local") {
+                    return Err(AuthError::ConfigError(
+                        ".local domains are not allowed".into()
+                    ));
+                }
+            }
+            url::Host::Ipv4(ip) => {
+                if is_private_ip(IpAddr::V4(ip)) {
+                    return Err(AuthError::ConfigError(
+                        "Private IP addresses are not allowed".into()
+                    ));
+                }
+            }
+            url::Host::Ipv6(ip) => {
+                if is_private_ip(IpAddr::V6(ip)) {
+                    return Err(AuthError::ConfigError(
+                        "Private IP addresses are not allowed".into()
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 impl OAuthProvider {
     /// Create a new provider
     pub fn new(config: ProviderConfig) -> Self {
@@ -252,20 +333,41 @@ impl OAuthProvider {
     pub async fn discover(&mut self) -> Result<()> {
         let discovery_url = format!("{}/.well-known/openid-configuration", self.config.issuer_url);
 
+        // Validate URL for SSRF protection
+        validate_url_for_ssrf(&discovery_url)?;
+
+        debug!("Performing OIDC discovery for {}", self.config.issuer_url);
+
         let response = self.http_client
             .get(&discovery_url)
             .send()
-            .await?;
+            .await
+            .map_err(|e| {
+                warn!("OIDC discovery failed: {}", e);
+                AuthError::DiscoveryFailed("Failed to connect to provider".into())
+            })?;
 
         if !response.status().is_success() {
-            return Err(AuthError::DiscoveryFailed(format!(
-                "HTTP {}: {}",
-                response.status(),
-                response.text().await.unwrap_or_default()
-            )));
+            let status = response.status();
+            warn!("OIDC discovery returned status {}", status);
+            return Err(AuthError::DiscoveryFailed(
+                "Provider discovery failed".into()
+            ));
         }
 
-        let metadata: OidcMetadata = response.json().await?;
+        let metadata: OidcMetadata = response.json().await
+            .map_err(|e| {
+                warn!("Failed to parse OIDC metadata: {}", e);
+                AuthError::DiscoveryFailed("Invalid provider response".into())
+            })?;
+
+        // Validate discovered endpoints for SSRF
+        validate_url_for_ssrf(&metadata.authorization_endpoint)?;
+        validate_url_for_ssrf(&metadata.token_endpoint)?;
+        validate_url_for_ssrf(&metadata.jwks_uri)?;
+        if let Some(ref uri) = metadata.userinfo_endpoint {
+            validate_url_for_ssrf(uri)?;
+        }
 
         // Update config with discovered endpoints
         self.config.authorization_endpoint = Some(metadata.authorization_endpoint.clone());
@@ -306,8 +408,21 @@ impl OAuthProvider {
             return true;
         }
 
-        let domain = email.split('@').nth(1).unwrap_or("");
-        self.config.allowed_domains.iter().any(|d| d == domain)
+        // Parse email properly using addr crate for validation
+        if addr::parse_email_address(email).is_err() {
+            debug!("Invalid email format: {}", email);
+            return false;
+        }
+
+        // Extract domain part after @ (already validated by addr crate)
+        let email_domain = match email.rsplit_once('@') {
+            Some((_, domain)) => domain.to_lowercase(),
+            None => return false,
+        };
+
+        self.config.allowed_domains.iter().any(|d| {
+            d.to_lowercase() == email_domain
+        })
     }
 
     /// Check if user is in required groups

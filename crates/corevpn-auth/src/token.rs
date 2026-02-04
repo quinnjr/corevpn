@@ -3,6 +3,10 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use parking_lot::RwLock;
+use tracing::{debug, warn};
 
 use crate::{AuthError, Result};
 
@@ -102,7 +106,87 @@ impl StringOrArray {
     }
 }
 
-/// Token validator
+/// JWKS key set
+#[derive(Debug, Clone, Deserialize)]
+struct JwkSet {
+    keys: Vec<Jwk>,
+}
+
+/// Individual JWK
+#[derive(Debug, Clone, Deserialize)]
+struct Jwk {
+    /// Key ID
+    kid: Option<String>,
+    /// Key type (e.g., "RSA")
+    kty: String,
+    /// Algorithm (e.g., "RS256")
+    alg: Option<String>,
+    /// RSA modulus (base64url)
+    n: Option<String>,
+    /// RSA exponent (base64url)
+    e: Option<String>,
+    /// Key use (e.g., "sig")
+    #[serde(rename = "use")]
+    key_use: Option<String>,
+}
+
+impl Jwk {
+    /// Convert to jsonwebtoken DecodingKey
+    fn to_decoding_key(&self) -> std::result::Result<jsonwebtoken::DecodingKey, String> {
+        match self.kty.as_str() {
+            "RSA" => {
+                let n = self.n.as_ref().ok_or("Missing 'n' in RSA key")?;
+                let e = self.e.as_ref().ok_or("Missing 'e' in RSA key")?;
+                jsonwebtoken::DecodingKey::from_rsa_components(n, e)
+                    .map_err(|e| format!("Failed to create RSA key: {}", e))
+            }
+            _ => Err(format!("Unsupported key type: {}", self.kty)),
+        }
+    }
+}
+
+/// JWKS cache entry
+#[derive(Clone)]
+struct JwksCacheEntry {
+    jwks: JwkSet,
+    expires_at: SystemTime,
+}
+
+/// JWKS cache
+struct JwksCache {
+    entries: HashMap<String, JwksCacheEntry>,
+    ttl: Duration,
+}
+
+impl JwksCache {
+    fn new(ttl: Duration) -> Self {
+        Self {
+            entries: HashMap::new(),
+            ttl,
+        }
+    }
+
+    fn get(&self, jwks_uri: &str) -> Option<JwkSet> {
+        let entry = self.entries.get(jwks_uri)?;
+        if SystemTime::now() < entry.expires_at {
+            Some(entry.jwks.clone())
+        } else {
+            None
+        }
+    }
+
+    fn insert(&mut self, jwks_uri: String, jwks: JwkSet) {
+        let expires_at = SystemTime::now() + self.ttl;
+        self.entries.insert(jwks_uri, JwksCacheEntry { jwks, expires_at });
+    }
+
+    fn clear_expired(&mut self) {
+        let now = SystemTime::now();
+        self.entries.retain(|_, entry| entry.expires_at > now);
+    }
+}
+
+/// Token validator with JWKS support
 pub struct TokenValidator {
     /// Expected issuer
     issuer: String,
@@ -110,6 +194,12 @@ pub struct TokenValidator {
     audience: String,
     /// Clock skew tolerance (in seconds)
     clock_skew: i64,
+    /// JWKS URI for signature verification
+    jwks_uri: Option<String>,
+    /// HTTP client for fetching JWKS
+    http_client: reqwest::Client,
+    /// JWKS cache
+    jwks_cache: Arc<RwLock<JwksCache>>,
 }
 
 impl TokenValidator {
@@ -119,6 +209,21 @@ impl TokenValidator {
             issuer: issuer.to_string(),
             audience: audience.to_string(),
             clock_skew: 60, // 1 minute tolerance
+            jwks_uri: None,
+            http_client: reqwest::Client::new(),
+            jwks_cache: Arc::new(RwLock::new(JwksCache::new(Duration::from_secs(3600)))),
+        }
+    }
+
+    /// Create a new token validator with JWKS URI for signature verification
+    pub fn with_jwks_uri(issuer: &str, audience: &str, jwks_uri: &str) -> Self {
+        Self {
+            issuer: issuer.to_string(),
+            audience: audience.to_string(),
+            clock_skew: 60,
+            jwks_uri: Some(jwks_uri.to_string()),
+            http_client: reqwest::Client::new(),
+            jwks_cache: Arc::new(RwLock::new(JwksCache::new(Duration::from_secs(3600)))),
         }
     }
 
@@ -171,11 +276,103 @@ impl TokenValidator {
         Ok(())
     }
 
+    /// Fetch and cache JWKS
+    async fn fetch_jwks(&self, jwks_uri: &str) -> Result<JwkSet> {
+        // Check cache first
+        {
+            let cache = self.jwks_cache.read();
+            if let Some(jwks) = cache.get(jwks_uri) {
+                debug!("JWKS cache hit for {}", jwks_uri);
+                return Ok(jwks);
+            }
+        }
+
+        // Fetch from network
+        debug!("Fetching JWKS from {}", jwks_uri);
+        let response = self.http_client
+            .get(jwks_uri)
+            .send()
+            .await
+            .map_err(|e| AuthError::HttpError(format!("Failed to fetch JWKS: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(AuthError::HttpError(format!(
+                "JWKS fetch failed with status: {}",
+                response.status()
+            )));
+        }
+
+        let jwks: JwkSet = response
+            .json()
+            .await
+            .map_err(|e| AuthError::HttpError(format!("Failed to parse JWKS: {}", e)))?;
+
+        // Cache the result
+        {
+            let mut cache = self.jwks_cache.write();
+            cache.insert(jwks_uri.to_string(), jwks.clone());
+            cache.clear_expired();
+        }
+
+        Ok(jwks)
+    }
+
+    /// Verify JWT signature using JWKS
+    async fn verify_signature(&self, token: &str) -> Result<()> {
+        let jwks_uri = self.jwks_uri.as_ref()
+            .ok_or_else(|| AuthError::TokenValidationFailed("JWKS URI not configured".into()))?;
+
+        // Decode header to get key ID
+        let header = jsonwebtoken::decode_header(token)
+            .map_err(|e| AuthError::TokenValidationFailed(format!("Invalid JWT header: {}", e)))?;
+
+        let kid = header.kid.ok_or_else(|| {
+            AuthError::TokenValidationFailed("JWT missing key ID (kid)".into())
+        })?;
+
+        // Fetch JWKS
+        let jwks = self.fetch_jwks(jwks_uri).await?;
+
+        // Find the key by kid
+        let jwk = jwks.keys.iter()
+            .find(|k| k.kid.as_deref() == Some(&kid))
+            .ok_or_else(|| AuthError::TokenValidationFailed(format!("Key {} not found in JWKS", kid)))?;
+
+        // Convert to decoding key
+        let decoding_key = jwk.to_decoding_key()
+            .map_err(|e| AuthError::TokenValidationFailed(e))?;
+
+        // Verify signature using jsonwebtoken
+        let mut validation = jsonwebtoken::Validation::new(header.alg);
+        validation.set_issuer(&[&self.issuer]);
+        validation.set_audience(&[&self.audience]);
+        validation.leeway = self.clock_skew as u64;
+
+        let _decoded = jsonwebtoken::decode::<serde_json::Value>(token, &decoding_key, &validation)
+            .map_err(|e| AuthError::TokenValidationFailed(format!("JWT signature verification failed: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Decode and verify JWT token with signature verification
+    ///
+    /// This method verifies the JWT signature using JWKS before trusting the claims.
+    pub async fn decode_and_verify_jwt(&self, token: &str) -> Result<IdTokenClaims> {
+        // Verify signature if JWKS URI is configured
+        if self.jwks_uri.is_some() {
+            self.verify_signature(token).await?;
+        } else {
+            warn!("JWT signature verification skipped - JWKS URI not configured");
+        }
+
+        // Decode claims
+        self.decode_jwt_claims(token)
+    }
+
     /// Decode JWT without verification (for extracting claims)
     ///
-    /// WARNING: This does not verify the signature. For production use,
-    /// you should use a proper JWT library that verifies signatures.
-    pub fn decode_jwt_claims(token: &str) -> Result<IdTokenClaims> {
+    /// NOTE: This does not verify the signature. Use decode_and_verify_jwt() for production.
+    pub fn decode_jwt_claims(&self, token: &str) -> Result<IdTokenClaims> {
         use base64::Engine;
 
         let parts: Vec<&str> = token.split('.').collect();

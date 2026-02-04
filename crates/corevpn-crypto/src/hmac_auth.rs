@@ -47,7 +47,7 @@ impl HmacAuth {
     /// - Bytes 64-127: Server HMAC key (encrypt direction)
     /// - Bytes 128-191: Client HMAC key (decrypt direction)
     /// - Bytes 192-255: Server HMAC key (decrypt direction)
-    pub fn from_ta_key(ta_key: &[u8; 256], is_server: bool, key_direction: Option<u8>) -> Self {
+    pub fn from_ta_key(ta_key: &[u8; 256], is_server: bool, key_direction: Option<u8>) -> Result<Self> {
         let (tx_key, rx_key) = match (is_server, key_direction) {
             // Server with key-direction 0 (normal)
             (true, Some(0)) | (true, None) => {
@@ -81,10 +81,15 @@ impl HmacAuth {
                 rx.copy_from_slice(&ta_key[0..32]);
                 (tx, rx)
             }
-            _ => panic!("Invalid key direction"),
+            _ => {
+                return Err(CryptoError::InvalidPem(
+                    format!("Invalid key direction: is_server={}, key_direction={:?}", 
+                            is_server, key_direction)
+                ));
+            }
         };
 
-        Self { tx_key, rx_key }
+        Ok(Self { tx_key, rx_key })
     }
 
     /// Compute HMAC for an outgoing packet

@@ -85,10 +85,10 @@ pub fn derive_single_key(
     info: &[u8],
 ) -> Result<[u8; 32]> {
     let hkdf = Hkdf::<Sha256>::new(Some(salt), ikm);
-    let mut okm = [0u8; 32];
-    hkdf.expand(info, &mut okm)
+    let mut okm = zeroize::Zeroizing::new([0u8; 32]);
+    hkdf.expand(info, okm.as_mut())
         .map_err(|_| CryptoError::KeyDerivationFailed("HKDF expansion failed"))?;
-    Ok(okm)
+    Ok(*okm)
 }
 
 /// PRF for OpenVPN TLS key expansion
@@ -103,19 +103,19 @@ pub fn openvpn_prf(secret: &[u8], label: &[u8], seed: &[u8], output_len: usize) 
     type HmacSha256 = Hmac<Sha256>;
 
     // Combine label and seed
-    let mut combined_seed = Vec::with_capacity(label.len() + seed.len());
+    let mut combined_seed = zeroize::Zeroizing::new(Vec::with_capacity(label.len() + seed.len()));
     combined_seed.extend_from_slice(label);
     combined_seed.extend_from_slice(seed);
 
     let mut output = Vec::with_capacity(output_len);
-    let mut a = combined_seed.clone();
+    let mut a = zeroize::Zeroizing::new(combined_seed.clone());
 
     while output.len() < output_len {
         // A(i) = HMAC(secret, A(i-1))
         let mut mac = HmacSha256::new_from_slice(secret)
             .map_err(|_| CryptoError::KeyDerivationFailed("Invalid HMAC key"))?;
         mac.update(&a);
-        a = mac.finalize().into_bytes().to_vec();
+        *a = zeroize::Zeroizing::new(mac.finalize().into_bytes().to_vec());
 
         // P_hash = HMAC(secret, A(i) + seed)
         let mut mac = HmacSha256::new_from_slice(secret)

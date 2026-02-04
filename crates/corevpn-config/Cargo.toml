@@ -28,6 +28,9 @@ anyhow = { workspace = true }
 # Networking
 ipnet = { workspace = true }
 
+# Security
+secrecy = "0.8"
+
 # Logging
 tracing = { workspace = true }
 

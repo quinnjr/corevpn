@@ -62,12 +62,40 @@ pub struct Route {
 
 impl Route {
     /// Create a new route
-    pub fn new(network: IpNet) -> Self {
-        Self {
+    pub fn new(network: IpNet) -> Result<Self> {
+        // Validate network
+        Self::validate_network(&network)?;
+        
+        Ok(Self {
             network,
             gateway: None,
             metric: 0,
+        })
+    }
+
+    /// Validate network configuration
+    fn validate_network(network: &IpNet) -> Result<()> {
+        match network {
+            IpNet::V4(v4_net) => {
+                // Validate IPv4 network prefix length
+                let prefix_len = v4_net.prefix_len();
+                if prefix_len > 32 {
+                    return Err(CoreError::ConfigError(
+                        "Invalid IPv4 network prefix length".into(),
+                    ));
+                }
+            }
+            IpNet::V6(v6_net) => {
+                // Validate IPv6 network prefix length
+                let prefix_len = v6_net.prefix_len();
+                if prefix_len > 128 {
+                    return Err(CoreError::ConfigError(
+                        "Invalid IPv6 network prefix length".into(),
+                    ));
+                }
+            }
         }
+        Ok(())
     }
 
     /// Create default route (0.0.0.0/0)
@@ -123,7 +151,32 @@ impl AddressPool {
     /// # Arguments
     /// * `ipv4_net` - IPv4 network (e.g., "10.8.0.0/24")
     /// * `ipv6_net` - IPv6 network (e.g., "fd00::/64")
-    pub fn new(ipv4_net: Option<Ipv4Net>, ipv6_net: Option<Ipv6Net>) -> Self {
+    ///
+    /// # Errors
+    /// Returns an error if the network configuration is invalid
+    pub fn new(ipv4_net: Option<Ipv4Net>, ipv6_net: Option<Ipv6Net>) -> Result<Self> {
+        // Validate IPv4 network if provided
+        if let Some(ref net) = ipv4_net {
+            Self::validate_ipv4_net(net)?;
+        }
+
+        // Validate IPv6 network if provided
+        if let Some(ref net) = ipv6_net {
+            Self::validate_ipv6_net(net)?;
+        }
+
+        // Ensure at least one network is provided
+        if ipv4_net.is_none() && ipv6_net.is_none() {
+            return Err(CoreError::ConfigError(
+                "At least one network (IPv4 or IPv6) must be provided".into(),
+            ));
+        }
+
+        Ok(Self::new_unchecked(ipv4_net, ipv6_net))
+    }
+
+    /// Create a new address pool without validation (internal use)
+    fn new_unchecked(ipv4_net: Option<Ipv4Net>, ipv6_net: Option<Ipv6Net>) -> Self {
         let mut reserved_v4 = HashSet::new();
         let mut reserved_v6 = HashSet::new();
 
@@ -150,6 +203,87 @@ impl AddressPool {
             reserved_v4,
             reserved_v6,
         }
+    }
+
+    /// Validate IPv4 network configuration
+    fn validate_ipv4_net(net: &Ipv4Net) -> Result<()> {
+        // Check prefix length is reasonable (not too small, not too large)
+        let prefix_len = net.prefix_len();
+        if prefix_len < 8 {
+            return Err(CoreError::ConfigError(format!(
+                "IPv4 network prefix length {} is too small (minimum 8)",
+                prefix_len
+            )));
+        }
+        if prefix_len > 30 {
+            return Err(CoreError::ConfigError(format!(
+                "IPv4 network prefix length {} is too large (maximum 30)",
+                prefix_len
+            )));
+        }
+
+        // Ensure network is not a loopback or multicast address
+        let network_addr = net.network();
+        if network_addr.is_loopback() {
+            return Err(CoreError::ConfigError(
+                "IPv4 network cannot be a loopback address".into(),
+            ));
+        }
+        if network_addr.is_multicast() {
+            return Err(CoreError::ConfigError(
+                "IPv4 network cannot be a multicast address".into(),
+            ));
+        }
+
+        // Ensure network is not in the link-local range (169.254.0.0/16)
+        if network_addr.octets()[0] == 169 && network_addr.octets()[1] == 254 {
+            return Err(CoreError::ConfigError(
+                "IPv4 network cannot be in the link-local range (169.254.0.0/16)".into(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Validate IPv6 network configuration
+    fn validate_ipv6_net(net: &Ipv6Net) -> Result<()> {
+        // Check prefix length is reasonable
+        let prefix_len = net.prefix_len();
+        if prefix_len < 48 {
+            return Err(CoreError::ConfigError(format!(
+                "IPv6 network prefix length {} is too small (minimum 48)",
+                prefix_len
+            )));
+        }
+        if prefix_len > 120 {
+            return Err(CoreError::ConfigError(format!(
+                "IPv6 network prefix length {} is too large (maximum 120)",
+                prefix_len
+            )));
+        }
+
+        // Ensure network is not a loopback or multicast address
+        let network_addr = net.network();
+        if network_addr.is_loopback() {
+            return Err(CoreError::ConfigError(
+                "IPv6 network cannot be a loopback address".into(),
+            ));
+        }
+        if network_addr.is_multicast() {
+            return Err(CoreError::ConfigError(
+                "IPv6 network cannot be a multicast address".into(),
+            ));
+        }
+
+        // Ensure network is not in the link-local range (fe80::/10)
+        let segments = network_addr.segments();
+        if segments[0] & 0xffc0 == 0xfe80 {
+            return Err(CoreError::ConfigError(
+                "IPv6 network cannot be in the link-local range (fe80::/10)".into(),
+            ));
+        }
+
+        Ok(())
     }
 
     /// Get the gateway IPv4 address
@@ -357,7 +491,7 @@ mod tests {
         let pool = AddressPool::new(
             Some("10.8.0.0/24".parse().unwrap()),
             None,
-        );
+        ).unwrap();
 
         // First allocation should be .2
         let addr1 = pool.allocate().unwrap();
@@ -380,7 +514,7 @@ mod tests {
         let pool = AddressPool::new(
             Some("10.8.0.0/24".parse().unwrap()),
             Some("fd00::/64".parse().unwrap()),
-        );
+        ).unwrap();
 
         assert_eq!(pool.gateway_v4(), Some("10.8.0.1".parse().unwrap()));
         assert_eq!(pool.gateway_v6(), Some("fd00::1".parse().unwrap()));
@@ -388,11 +522,30 @@ mod tests {
 
     #[test]
     fn test_route() {
-        let route = Route::new("192.168.1.0/24".parse().unwrap())
+        let route = Route::new("192.168.1.0/24".parse().unwrap()).unwrap()
             .with_gateway("10.8.0.1".parse().unwrap())
             .with_metric(100);
 
         assert_eq!(route.metric, 100);
         assert_eq!(route.gateway, Some("10.8.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_address_pool_validation() {
+        // Test invalid IPv4 prefix length
+        assert!(AddressPool::new(Some("10.8.0.0/7".parse().unwrap()), None).is_err());
+        assert!(AddressPool::new(Some("10.8.0.0/31".parse().unwrap()), None).is_err());
+        
+        // Test invalid IPv6 prefix length
+        assert!(AddressPool::new(None, Some("fd00::/47".parse().unwrap())).is_err());
+        assert!(AddressPool::new(None, Some("fd00::/121".parse().unwrap())).is_err());
+        
+        // Test loopback addresses
+        assert!(AddressPool::new(Some("127.0.0.0/24".parse().unwrap()), None).is_err());
+        assert!(AddressPool::new(None, Some("::1/64".parse().unwrap())).is_err());
+        
+        // Test valid addresses
+        assert!(AddressPool::new(Some("10.8.0.0/24".parse().unwrap()), None).is_ok());
+        assert!(AddressPool::new(None, Some("fd00::/64".parse().unwrap())).is_ok());
     }
 }

@@ -121,11 +121,14 @@ impl ReliableTransport {
         Ok((packet_id, data))
     }
 
+    /// Maximum number of out-of-order packets to buffer
+    const MAX_OUT_OF_ORDER: usize = 100;
+
     /// Process received packet
     ///
     /// Returns the payload if this is the next expected packet,
     /// otherwise buffers it for later delivery.
-    pub fn receive(&mut self, packet_id: u32, data: Bytes) -> Option<Bytes> {
+    pub fn receive(&mut self, packet_id: u32, data: Bytes) -> Result<Option<Bytes>> {
         // Queue ACK
         self.pending_acks.push_back(packet_id);
 
@@ -139,14 +142,20 @@ impl ReliableTransport {
                 // Note: in a real implementation, we'd queue these for delivery
             }
 
-            Some(data)
+            Ok(Some(data))
         } else if packet_id > self.next_recv_id {
             // Out of order - buffer
+            // Security: Limit buffer size to prevent DoS
+            if self.out_of_order.len() >= Self::MAX_OUT_OF_ORDER {
+                return Err(ProtocolError::InvalidPacket(
+                    "too many out-of-order packets".into(),
+                ));
+            }
             self.out_of_order.insert(packet_id, data);
-            None
+            Ok(None)
         } else {
             // Duplicate - ignore
-            None
+            Ok(None)
         }
     }
 
