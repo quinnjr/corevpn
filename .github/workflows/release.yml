@@ -4,6 +4,14 @@ on:
   push:
     tags:
       - 'v*'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., v0.2.0)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -66,13 +74,13 @@ jobs:
       - name: Strip binaries (Linux/macOS)
         run: |
           strip target/${{ matrix.target }}/release/corevpn-server || true
-          strip target/${{ matrix.target }}/release/corevpn-cli || true
+          strip target/${{ matrix.target }}/release/corevpn || true
 
       - name: Create archive
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/corevpn-server dist/
-          cp target/${{ matrix.target }}/release/corevpn-cli dist/
+          cp target/${{ matrix.target }}/release/corevpn dist/corevpn-cli
           cp README.md LICENSE-MIT LICENSE-APACHE dist/ 2>/dev/null || true
           cp -r packaging/config dist/
           cd dist && tar czf ../${{ matrix.artifact }}.tar.gz *
@@ -102,15 +110,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "release" ]; then
+            echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=semver,pattern={{version}},value=${{ steps.version.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.version }}
+            type=semver,pattern={{major}},value=${{ steps.version.outputs.version }}
+            type=raw,value=latest,enable=${{ !contains(steps.version.outputs.version, '-') }}
             type=sha
 
       - name: Build and push
@@ -130,6 +150,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          elif [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+          else
+            VERSION="${GITHUB_REF_NAME}"
+          fi
+          echo "version=${VERSION#v}" >> $GITHUB_OUTPUT
+          echo "tag=${VERSION}" >> $GITHUB_OUTPUT
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -147,12 +180,12 @@ jobs:
       - name: Build DEB package
         run: |
           chmod +x packaging/scripts/build-deb.sh
-          VERSION=${GITHUB_REF_NAME#v} ./packaging/scripts/build-deb.sh || echo "DEB build skipped"
+          VERSION=${{ steps.version.outputs.version }} ./packaging/scripts/build-deb.sh || echo "DEB build skipped"
 
       - name: Build RPM package
         run: |
           chmod +x packaging/scripts/build-rpm.sh
-          VERSION=${GITHUB_REF_NAME#v} ./packaging/scripts/build-rpm.sh || echo "RPM build skipped"
+          VERSION=${{ steps.version.outputs.version }} ./packaging/scripts/build-rpm.sh || echo "RPM build skipped"
 
       - name: Upload DEB artifact
         uses: actions/upload-artifact@v4
@@ -174,6 +207,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          elif [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+          else
+            VERSION="${GITHUB_REF_NAME}"
+          fi
+          echo "version=${VERSION#v}" >> $GITHUB_OUTPUT
+
       - name: Set up Helm
         uses: azure/setup-helm@v4
         with:
@@ -181,7 +226,7 @@ jobs:
 
       - name: Update chart version
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          VERSION=${{ steps.version.outputs.version }}
           sed -i "s/^version:.*/version: ${VERSION}/" deploy/helm/corevpn/Chart.yaml
           sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" deploy/helm/corevpn/Chart.yaml
 
@@ -202,6 +247,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Download all artifacts
         uses: actions/download-artifact@v7
         with:
@@ -220,12 +276,13 @@ jobs:
           cd release
           sha256sum * > SHA256SUMS
 
-      - name: Create GitHub Release
+      - name: Create or Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
           files: release/*
-          generate_release_notes: true
+          generate_release_notes: ${{ github.event_name != 'release' }}
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(steps.version.outputs.tag, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
