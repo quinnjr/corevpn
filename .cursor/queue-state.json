@@ -1,0 +1,23 @@
+{
+  "tasks": [
+    {
+      "id": "1769283891588-cuqjl6way",
+      "title": "Project GUI to egui",
+      "description": "Edited connection.rs, app.rs, about.rs, logs.rs, profiles.rs",
+      "status": "pending",
+      "createdAt": 1769283891588,
+      "updatedAt": 1769284191618,
+      "metadata": {
+        "composerId": "ff8dd0d0-ff1f-42bd-ad48-f25f3f966409",
+        "source": "cursor-chat",
+        "createdAt": 1769283830497,
+        "unifiedMode": "agent",
+        "filesChanged": 18,
+        "linesAdded": 1284,
+        "linesRemoved": 1193
+      }
+    }
+  ],
+  "version": "1.0.0",
+  "lastSaved": 1769285900688
+}

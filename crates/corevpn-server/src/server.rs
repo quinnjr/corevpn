@@ -591,17 +591,20 @@ impl ServerStats {
 fn set_resource_limits() -> Result<()> {
     use nix::sys::resource::{getrlimit, setrlimit, Resource};
 
-    // Set RLIMIT_NOFILE (file descriptors)
+    // Set RLIMIT_NOFILE (file descriptors) - available on all Unix platforms
     let (_, hard_limit) = getrlimit(Resource::RLIMIT_NOFILE)?;
     let soft_limit = (hard_limit.min(65536)).max(1024); // At least 1024, max 65536
     setrlimit(Resource::RLIMIT_NOFILE, soft_limit, hard_limit)?;
     info!("Set RLIMIT_NOFILE to {}", soft_limit);
 
-    // Set RLIMIT_NPROC (processes) - prevent fork bombs
-    let (_, hard_limit_proc) = getrlimit(Resource::RLIMIT_NPROC)?;
-    let soft_limit_proc = (hard_limit_proc.min(4096)).max(256);
-    setrlimit(Resource::RLIMIT_NPROC, soft_limit_proc, hard_limit_proc)?;
-    info!("Set RLIMIT_NPROC to {}", soft_limit_proc);
+    // Set RLIMIT_NPROC (processes) - prevent fork bombs (Linux only)
+    #[cfg(target_os = "linux")]
+    {
+        let (_, hard_limit_proc) = getrlimit(Resource::RLIMIT_NPROC)?;
+        let soft_limit_proc = (hard_limit_proc.min(4096)).max(256);
+        setrlimit(Resource::RLIMIT_NPROC, soft_limit_proc, hard_limit_proc)?;
+        info!("Set RLIMIT_NPROC to {}", soft_limit_proc);
+    }
 
     Ok(())
 }
