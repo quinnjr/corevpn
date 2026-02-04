@@ -63,6 +63,8 @@ RUN apk upgrade --no-cache \
         libssl3 \
         libcrypto3 \
         ca-certificates \
+        # Required for Rust dynamic linking
+        libgcc \
         # Networking tools for VPN
         iproute2 \
         iptables \
