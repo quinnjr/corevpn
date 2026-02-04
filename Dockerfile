@@ -1,10 +1,11 @@
 # CoreVPN Docker Image
 # Multi-stage build with hardened Alpine runtime
+# Uses ECR Public Gallery images to avoid Docker Hub rate limits
 
 # =============================================================================
 # Build stage - using Rust with musl for static linking
 # =============================================================================
-FROM rust:alpine AS builder
+FROM public.ecr.aws/docker/library/rust:alpine AS builder
 
 WORKDIR /build
 
@@ -46,7 +47,7 @@ RUN cargo build --release -p corevpn-server -p corevpn-cli \
 # =============================================================================
 # Runtime stage - Hardened Alpine
 # =============================================================================
-FROM alpine:3.23
+FROM public.ecr.aws/docker/library/alpine:3.23
 
 # Labels for container metadata
 LABEL org.opencontainers.image.title="CoreVPN Server" \
