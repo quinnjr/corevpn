@@ -18,8 +18,8 @@ RUN apk add --no-cache \
     make \
     perl
 
-# Set environment for static linking
-ENV RUSTFLAGS="-C target-feature=-crt-static"
+# Set environment for static linking (musl defaults to +crt-static)
+ENV RUSTFLAGS="-C target-feature=+crt-static"
 ENV OPENSSL_STATIC=1
 ENV OPENSSL_LIB_DIR=/usr/lib
 ENV OPENSSL_INCLUDE_DIR=/usr/include
@@ -63,8 +63,6 @@ RUN apk upgrade --no-cache \
         libssl3 \
         libcrypto3 \
         ca-certificates \
-        # Required for Rust dynamic linking
-        libgcc \
         # Networking tools for VPN
         iproute2 \
         iptables \
