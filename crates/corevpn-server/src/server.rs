@@ -608,45 +608,14 @@ async fn handle_control_packet(
                                             }
                                         }
 
-                                        // Check if client supports EKM via IV_PROTO
-                                        // IV_PROTO bit 4 (0x10) = tls-key-export (EKM)
-                                        let client_supports_ekm = if let Some(ref pi) = client_km.peer_info {
-                                            pi.lines()
-                                                .find(|l| l.starts_with("IV_PROTO="))
-                                                .and_then(|l| l.trim_start_matches("IV_PROTO=").parse::<u32>().ok())
-                                                .map(|proto| proto & 0x10 != 0)
-                                                .unwrap_or(false)
-                                        } else {
-                                            false
-                                        };
-
-                                        let use_ekm = if client_supports_ekm {
-                                            // Try EKM if client supports it
-                                            let ekm_label = b"EXPORTER-OpenVPN-datakeys".to_vec();
-                                            let mut ekm_context = Vec::new();
-                                            ekm_context.extend_from_slice(&client_km.random1);
-                                            ekm_context.extend_from_slice(&server_random1);
-                                            let mut key_block = vec![0u8; 256];
-
-                                            match tls.export_keying_material(&mut key_block, &ekm_label, Some(&ekm_context)) {
-                                                Ok(()) => {
-                                                    debug!("Derived data channel keys via TLS EKM for {}", peer_addr);
-                                                    let key_material = corevpn_crypto::KeyMaterial::from_raw_block(&key_block[..128]);
-                                                    conn.protocol.install_keys(&key_material, true);
-                                                    true
-                                                }
-                                                Err(e) => {
-                                                    debug!("EKM failed ({}), falling back to PRF for {}", e, peer_addr);
-                                                    false
-                                                }
-                                            }
-                                        } else {
-                                            debug!("Client does not support EKM (IV_PROTO missing tls-key-export bit), using PRF for {}", peer_addr);
-                                            false
-                                        };
-
-                                        if !use_ekm {
-                                            // Use OpenVPN PRF with pre-master secrets
+                                        // Derive data channel keys using OpenVPN PRF
+                                        // NOTE: EKM (TLS Exported Keying Material) is disabled for now.
+                                        // OpenVPN clients may advertise EKM support via IV_PROTO bit 4,
+                                        // but in practice with TLS 1.3 (rustls) the client's OpenSSL
+                                        // reports TLS_export=0 and falls back to PRF, causing a key
+                                        // mismatch if the server uses EKM. Always use PRF until EKM
+                                        // interop is verified end-to-end.
+                                        {
                                             let mut combined_pre_master = [0u8; 48];
                                             for i in 0..48 {
                                                 combined_pre_master[i] = client_km.pre_master[i] ^ server_pre_master[i];
@@ -665,7 +634,6 @@ async fn handle_control_packet(
                                                 128,
                                             ) {
                                                 Ok(master) => {
-                                                    // Expand master secret to key block
                                                     match corevpn_crypto::openvpn_prf(
                                                         &master,
                                                         b"OpenVPN key expansion",
