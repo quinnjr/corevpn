@@ -18,7 +18,7 @@ pub mod tls;
 pub use error::{ProtocolError, Result};
 pub use opcode::{OpCode, KeyId};
 pub use packet::{Packet, PacketHeader};
-pub use control::{ControlPacket, ControlMessage};
+pub use control::{ControlPacket, ControlMessage, KeyMethodV2, PushReply, Topology};
 pub use data::{DataPacket, DataChannel};
 pub use reliable::{ReliableTransport, ReliableConfig, TlsRecordReassembler};
 pub use session::{ProtocolSession, ProtocolState, ProcessedPacket};

@@ -67,6 +67,27 @@ pub fn derive_keys(
 }
 
 impl KeyMaterial {
+    /// Create key material from a raw key block (e.g., from TLS EKM or PRF output)
+    ///
+    /// Expected layout (128 bytes minimum):
+    /// - bytes 0..32: client write key
+    /// - bytes 32..64: server write key
+    /// - bytes 64..96: client HMAC key
+    /// - bytes 96..128: server HMAC key
+    pub fn from_raw_block(block: &[u8]) -> Self {
+        let mut material = Self {
+            client_write_key: [0u8; 32],
+            server_write_key: [0u8; 32],
+            client_hmac_key: [0u8; 32],
+            server_hmac_key: [0u8; 32],
+        };
+        material.client_write_key.copy_from_slice(&block[0..32]);
+        material.server_write_key.copy_from_slice(&block[32..64]);
+        material.client_hmac_key.copy_from_slice(&block[64..96]);
+        material.server_hmac_key.copy_from_slice(&block[96..128]);
+        material
+    }
+
     /// Create data channel keys for the client side
     pub fn client_data_key(&self, suite: CipherSuite) -> DataChannelKey {
         DataChannelKey::new(self.client_write_key, suite)

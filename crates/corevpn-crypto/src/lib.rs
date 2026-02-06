@@ -26,7 +26,7 @@ pub use keys::{
     KeyPair,
 };
 pub use cipher::{Cipher, CipherSuite, DataChannelKey, PacketCipher};
-pub use kdf::{derive_keys, KeyMaterial};
+pub use kdf::{derive_keys, openvpn_prf, KeyMaterial};
 pub use cert::{CertificateAuthority, Certificate, CertificateRequest, parse_static_key};
 pub use hmac_auth::HmacAuth;
 

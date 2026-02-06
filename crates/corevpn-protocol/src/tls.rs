@@ -133,6 +133,20 @@ impl TlsHandler {
         }
     }
 
+    /// Export keying material from the TLS session (RFC 5705)
+    ///
+    /// Used by OpenVPN for data channel key derivation with TLS 1.3.
+    pub fn export_keying_material(
+        &self,
+        output: &mut [u8],
+        label: &[u8],
+        context: Option<&[u8]>,
+    ) -> Result<()> {
+        self.conn.export_keying_material(output, label, context)
+            .map_err(|e| ProtocolError::TlsError(format!("EKM export failed: {}", e)))?;
+        Ok(())
+    }
+
     /// Get peer certificate if available
     pub fn peer_certificates(&self) -> Option<Vec<CertificateDer<'static>>> {
         self.conn.peer_certificates().map(|certs| {

@@ -528,11 +528,175 @@ async fn handle_control_packet(
                         conn.protocol.set_state(ProtocolState::KeyExchange);
                         conn.auth_method = AuthMethod::Certificate;
 
-                        // Read any application data (key method v2)
+                        // Read client's key_method_v2 from TLS plaintext
                         let mut buf = vec![0u8; 4096];
                         if let Ok(n) = tls.read_plaintext(&mut buf) {
                             if n > 0 {
-                                debug!("Received {} bytes of post-handshake data", n);
+                                debug!("Received {} bytes of key_method_v2 from {}", n, peer_addr);
+
+                                // Parse client's key_method_v2
+                                match corevpn_protocol::KeyMethodV2::parse(&buf[..n]) {
+                                    Ok(client_km) => {
+                                        debug!("Client options: {}", client_km.options);
+                                        if let Some(ref pi) = client_km.peer_info {
+                                            debug!("Client peer_info: {}", pi);
+                                        }
+                                        if let Some(ref user) = client_km.username {
+                                            conn.username = Some(user.clone());
+                                        }
+
+                                        // Generate server's key_method_v2
+                                        let server_pre_master: [u8; 48] = corevpn_crypto::random_bytes();
+                                        let server_random: [u8; 32] = corevpn_crypto::random_bytes();
+
+                                        let server_km = corevpn_protocol::KeyMethodV2 {
+                                            pre_master: server_pre_master,
+                                            random: server_random,
+                                            options: format!(
+                                                "V4,dev-type tun,link-mtu 1560,tun-mtu 1500,proto UDPv4,cipher {},auth SHA256,keysize 256,key-method 2,tls-server",
+                                                server.config.security.cipher
+                                            ),
+                                            username: None,
+                                            password: None,
+                                            peer_info: None,
+                                        };
+
+                                        // Send server's key_method_v2 via TLS
+                                        let km_bytes = server_km.encode();
+                                        debug!("Sending {} bytes of key_method_v2 to {}", km_bytes.len(), peer_addr);
+                                        if let Err(e) = tls.write_plaintext(&km_bytes) {
+                                            warn!("Failed to send key_method_v2 to {}: {}", peer_addr, e);
+                                        }
+
+                                        // Flush TLS outgoing data
+                                        while tls.wants_write() {
+                                            if let Some(tls_out) = tls.get_outgoing()
+                                                .map_err(|e| anyhow::anyhow!("TLS outgoing failed: {}", e))?
+                                            {
+                                                debug!("Sending {} bytes of key exchange TLS data to {}", tls_out.len(), peer_addr);
+                                                let ctrl_packets = conn.protocol.create_control_packets(tls_out)?;
+                                                pending_packets.extend(ctrl_packets);
+                                            } else {
+                                                break;
+                                            }
+                                        }
+
+                                        // Derive data channel keys using TLS EKM
+                                        let mut ekm_label = b"EXPORTER-OpenVPN-datakeys".to_vec();
+                                        let mut ekm_context = Vec::new();
+                                        ekm_context.extend_from_slice(&client_km.random);
+                                        ekm_context.extend_from_slice(&server_random);
+                                        let mut key_block = vec![0u8; 256];
+
+                                        match tls.export_keying_material(&mut key_block, &ekm_label, Some(&ekm_context)) {
+                                            Ok(()) => {
+                                                debug!("Derived data channel keys via TLS EKM for {}", peer_addr);
+                                                // Key block layout: client_cipher_key(32) + server_cipher_key(32) + client_hmac_key(32) + server_hmac_key(32)
+                                                let key_material = corevpn_crypto::KeyMaterial::from_raw_block(&key_block[..128]);
+                                                conn.protocol.install_keys(&key_material, true);
+                                            }
+                                            Err(e) => {
+                                                debug!("EKM not available ({}), falling back to PRF key derivation for {}", e, peer_addr);
+                                                // Fallback: use OpenVPN PRF with pre-master secrets
+                                                let mut combined_pre_master = [0u8; 48];
+                                                for i in 0..48 {
+                                                    combined_pre_master[i] = client_km.pre_master[i] ^ server_pre_master[i];
+                                                }
+                                                let mut seed = Vec::new();
+                                                seed.extend_from_slice(&client_km.random);
+                                                seed.extend_from_slice(&server_random);
+
+                                                match corevpn_crypto::openvpn_prf(
+                                                    &combined_pre_master,
+                                                    b"OpenVPN master secret",
+                                                    &seed,
+                                                    128,
+                                                ) {
+                                                    Ok(master) => {
+                                                        // Expand master secret to key block
+                                                        match corevpn_crypto::openvpn_prf(
+                                                            &master,
+                                                            b"OpenVPN key expansion",
+                                                            &seed,
+                                                            256,
+                                                        ) {
+                                                            Ok(key_block) => {
+                                                                let key_material = corevpn_crypto::KeyMaterial::from_raw_block(&key_block[..128]);
+                                                                conn.protocol.install_keys(&key_material, true);
+                                                                debug!("Derived data channel keys via PRF for {}", peer_addr);
+                                                            }
+                                                            Err(e) => {
+                                                                warn!("Key expansion failed for {}: {}", peer_addr, e);
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        warn!("PRF key derivation failed for {}: {}", peer_addr, e);
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // Allocate VPN IP and build push reply
+                                        match server.address_pool.allocate() {
+                                            Ok(vpn_addr) => {
+                                                let client_ip = vpn_addr.ipv4.map(|ip| ip.to_string()).unwrap_or_default();
+                                                let gateway_ip = server.address_pool.gateway_v4()
+                                                    .map(|ip| ip.to_string())
+                                                    .unwrap_or_else(|| "10.8.0.1".to_string());
+
+                                                info!("Assigned VPN IP {} to {}", client_ip, peer_addr);
+
+                                                conn.vpn_ip = vpn_addr.ipv4;
+
+                                                let mut push_reply = corevpn_protocol::PushReply::default();
+                                                push_reply.ifconfig = Some((client_ip.clone(), gateway_ip.clone()));
+                                                push_reply.topology = corevpn_protocol::Topology::Subnet;
+
+                                                // Add DNS from config
+                                                for dns in &server.config.network.dns {
+                                                    push_reply.dns.push(dns.clone());
+                                                }
+
+                                                // Add redirect gateway if configured
+                                                push_reply.redirect_gateway = server.config.network.redirect_gateway;
+
+                                                push_reply.ping = 10;
+                                                push_reply.ping_restart = 60;
+
+                                                // Send PUSH_REPLY through TLS
+                                                let reply_str = push_reply.encode();
+                                                debug!("Sending PUSH_REPLY to {}: {}", peer_addr, reply_str);
+                                                let reply_bytes = format!("{}\0", reply_str);
+                                                if let Err(e) = tls.write_plaintext(reply_bytes.as_bytes()) {
+                                                    warn!("Failed to send PUSH_REPLY to {}: {}", peer_addr, e);
+                                                }
+
+                                                // Flush TLS outgoing data for push reply
+                                                while tls.wants_write() {
+                                                    if let Some(tls_out) = tls.get_outgoing()
+                                                        .map_err(|e| anyhow::anyhow!("TLS outgoing failed: {}", e))?
+                                                    {
+                                                        debug!("Sending {} bytes of push reply TLS data to {}", tls_out.len(), peer_addr);
+                                                        let ctrl_packets = conn.protocol.create_control_packets(tls_out)?;
+                                                        pending_packets.extend(ctrl_packets);
+                                                    } else {
+                                                        break;
+                                                    }
+                                                }
+
+                                                conn.protocol.set_state(ProtocolState::Established);
+                                                info!("VPN session established with {} (IP: {})", peer_addr, client_ip);
+                                            }
+                                            Err(e) => {
+                                                warn!("Failed to allocate VPN IP for {}: {}", peer_addr, e);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!("Failed to parse key_method_v2 from {}: {}", peer_addr, e);
+                                    }
+                                }
                             }
                         }
 
@@ -545,6 +709,18 @@ async fn handle_control_packet(
                                     conn.auth_method.clone(),
                                     crate::connection_log::AuthResult::Success,
                                 ));
+                        }
+                    }
+
+                    // Handle post-handshake TLS data (PUSH_REQUEST, etc.)
+                    if tls.is_handshake_complete() && conn.protocol.state() == ProtocolState::Established {
+                        let mut buf = vec![0u8; 4096];
+                        while let Ok(n) = tls.read_plaintext(&mut buf) {
+                            if n == 0 { break; }
+                            let msg = String::from_utf8_lossy(&buf[..n]);
+                            debug!("Post-handshake plaintext from {}: {:?}", peer_addr, msg.trim_end_matches('\0'));
+                            // Client may send additional requests here
+                            break;
                         }
                     }
                 } else {

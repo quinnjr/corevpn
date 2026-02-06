@@ -407,6 +407,109 @@ pub struct KeyMethodV2 {
 }
 
 impl KeyMethodV2 {
+    /// Parse key method v2 data from bytes (received from TLS plaintext)
+    ///
+    /// Format:
+    /// - 4 bytes: literal 0
+    /// - 1 byte: key method (must be 2)
+    /// - 48 bytes: pre-master secret
+    /// - 32 bytes: random data
+    /// - 2 bytes + N bytes: options string (length-prefixed)
+    /// - 2 bytes + N bytes: username (length-prefixed, optional)
+    /// - 2 bytes + N bytes: password (length-prefixed, optional)
+    /// - 2 bytes + N bytes: peer_info (length-prefixed, optional)
+    pub fn parse(data: &[u8]) -> Result<Self> {
+        if data.len() < 4 + 1 + 48 + 32 + 2 {
+            return Err(ProtocolError::PacketTooShort {
+                expected: 87,
+                got: data.len(),
+            });
+        }
+
+        let mut offset = 0;
+
+        // Skip 4 bytes literal zero
+        offset += 4;
+
+        // Key method byte (must be 2)
+        let key_method = data[offset];
+        offset += 1;
+        if key_method != 2 {
+            return Err(ProtocolError::InvalidPacket(
+                format!("unsupported key method: {}", key_method),
+            ));
+        }
+
+        // Pre-master secret (48 bytes)
+        let mut pre_master = [0u8; 48];
+        pre_master.copy_from_slice(&data[offset..offset + 48]);
+        offset += 48;
+
+        // Random (32 bytes)
+        let mut random = [0u8; 32];
+        random.copy_from_slice(&data[offset..offset + 32]);
+        offset += 32;
+
+        // Options string (length-prefixed)
+        let options = Self::read_length_prefixed_string(data, &mut offset)?;
+
+        // Username (optional, length-prefixed)
+        let username = if offset + 2 <= data.len() {
+            let s = Self::read_length_prefixed_string(data, &mut offset)?;
+            if s.is_empty() { None } else { Some(s) }
+        } else {
+            None
+        };
+
+        // Password (optional, length-prefixed)
+        let password = if offset + 2 <= data.len() {
+            let s = Self::read_length_prefixed_string(data, &mut offset)?;
+            if s.is_empty() { None } else { Some(s) }
+        } else {
+            None
+        };
+
+        // Peer info (optional, length-prefixed)
+        let peer_info = if offset + 2 <= data.len() {
+            let s = Self::read_length_prefixed_string(data, &mut offset)?;
+            if s.is_empty() { None } else { Some(s) }
+        } else {
+            None
+        };
+
+        Ok(Self {
+            pre_master,
+            random,
+            options,
+            username,
+            password,
+            peer_info,
+        })
+    }
+
+    /// Read a length-prefixed string from the buffer
+    fn read_length_prefixed_string(data: &[u8], offset: &mut usize) -> Result<String> {
+        if *offset + 2 > data.len() {
+            return Err(ProtocolError::PacketTooShort {
+                expected: *offset + 2,
+                got: data.len(),
+            });
+        }
+        let len = u16::from_be_bytes([data[*offset], data[*offset + 1]]) as usize;
+        *offset += 2;
+        if *offset + len > data.len() {
+            return Err(ProtocolError::PacketTooShort {
+                expected: *offset + len,
+                got: data.len(),
+            });
+        }
+        let s = std::str::from_utf8(&data[*offset..*offset + len])
+            .map_err(|_| ProtocolError::InvalidPacket("invalid UTF-8 in key method v2".into()))?;
+        *offset += len;
+        // Trim trailing null bytes (OpenVPN often null-terminates strings)
+        Ok(s.trim_end_matches('\0').to_string())
+    }
+
     /// Encode to bytes
     pub fn encode(&self) -> Vec<u8> {
         let mut buf = Vec::new();
