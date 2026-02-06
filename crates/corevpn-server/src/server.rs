@@ -547,11 +547,13 @@ async fn handle_control_packet(
 
                                         // Generate server's key_method_v2
                                         let server_pre_master: [u8; 48] = corevpn_crypto::random_bytes();
-                                        let server_random: [u8; 32] = corevpn_crypto::random_bytes();
+                                        let server_random1: [u8; 32] = corevpn_crypto::random_bytes();
+                                        let server_random2: [u8; 32] = corevpn_crypto::random_bytes();
 
                                         let server_km = corevpn_protocol::KeyMethodV2 {
                                             pre_master: server_pre_master,
-                                            random: server_random,
+                                            random1: server_random1,
+                                            random2: server_random2,
                                             options: format!(
                                                 "V4,dev-type tun,link-mtu 1560,tun-mtu 1500,proto UDPv4,cipher {},auth SHA256,keysize 256,key-method 2,tls-server",
                                                 server.config.security.cipher
@@ -582,10 +584,11 @@ async fn handle_control_packet(
                                         }
 
                                         // Derive data channel keys using TLS EKM
-                                        let mut ekm_label = b"EXPORTER-OpenVPN-datakeys".to_vec();
+                                        // EKM context uses random1 from both sides
+                                        let ekm_label = b"EXPORTER-OpenVPN-datakeys".to_vec();
                                         let mut ekm_context = Vec::new();
-                                        ekm_context.extend_from_slice(&client_km.random);
-                                        ekm_context.extend_from_slice(&server_random);
+                                        ekm_context.extend_from_slice(&client_km.random1);
+                                        ekm_context.extend_from_slice(&server_random1);
                                         let mut key_block = vec![0u8; 256];
 
                                         match tls.export_keying_material(&mut key_block, &ekm_label, Some(&ekm_context)) {
@@ -602,9 +605,12 @@ async fn handle_control_packet(
                                                 for i in 0..48 {
                                                     combined_pre_master[i] = client_km.pre_master[i] ^ server_pre_master[i];
                                                 }
+                                                // PRF seed: client.random1 + server.random1 + client.random2 + server.random2
                                                 let mut seed = Vec::new();
-                                                seed.extend_from_slice(&client_km.random);
-                                                seed.extend_from_slice(&server_random);
+                                                seed.extend_from_slice(&client_km.random1);
+                                                seed.extend_from_slice(&server_random1);
+                                                seed.extend_from_slice(&client_km.random2);
+                                                seed.extend_from_slice(&server_random2);
 
                                                 match corevpn_crypto::openvpn_prf(
                                                     &combined_pre_master,

@@ -394,8 +394,10 @@ impl AuthMessage {
 pub struct KeyMethodV2 {
     /// Pre-master secret (48 bytes)
     pub pre_master: [u8; 48],
-    /// Random data (32 bytes)
-    pub random: [u8; 32],
+    /// Random data 1 (32 bytes) - used as EKM context and PRF seed
+    pub random1: [u8; 32],
+    /// Random data 2 (32 bytes) - used as additional PRF seed
+    pub random2: [u8; 32],
     /// Options string
     pub options: String,
     /// Username (if using auth)
@@ -409,19 +411,21 @@ pub struct KeyMethodV2 {
 impl KeyMethodV2 {
     /// Parse key method v2 data from bytes (received from TLS plaintext)
     ///
-    /// Format:
+    /// Format (OpenVPN key_source + metadata):
     /// - 4 bytes: literal 0
     /// - 1 byte: key method (must be 2)
     /// - 48 bytes: pre-master secret
-    /// - 32 bytes: random data
-    /// - 2 bytes + N bytes: options string (length-prefixed)
+    /// - 32 bytes: random1
+    /// - 32 bytes: random2
+    /// - 2 bytes + N bytes: options string (length-prefixed, null-terminated)
     /// - 2 bytes + N bytes: username (length-prefixed, optional)
     /// - 2 bytes + N bytes: password (length-prefixed, optional)
     /// - 2 bytes + N bytes: peer_info (length-prefixed, optional)
     pub fn parse(data: &[u8]) -> Result<Self> {
-        if data.len() < 4 + 1 + 48 + 32 + 2 {
+        // Minimum: 4 + 1 + 48 + 32 + 32 + 2 = 119 bytes
+        if data.len() < 119 {
             return Err(ProtocolError::PacketTooShort {
-                expected: 87,
+                expected: 119,
                 got: data.len(),
             });
         }
@@ -445,9 +449,14 @@ impl KeyMethodV2 {
         pre_master.copy_from_slice(&data[offset..offset + 48]);
         offset += 48;
 
-        // Random (32 bytes)
-        let mut random = [0u8; 32];
-        random.copy_from_slice(&data[offset..offset + 32]);
+        // Random1 (32 bytes)
+        let mut random1 = [0u8; 32];
+        random1.copy_from_slice(&data[offset..offset + 32]);
+        offset += 32;
+
+        // Random2 (32 bytes)
+        let mut random2 = [0u8; 32];
+        random2.copy_from_slice(&data[offset..offset + 32]);
         offset += 32;
 
         // Options string (length-prefixed)
@@ -479,7 +488,8 @@ impl KeyMethodV2 {
 
         Ok(Self {
             pre_master,
-            random,
+            random1,
+            random2,
             options,
             username,
             password,
@@ -523,8 +533,11 @@ impl KeyMethodV2 {
         // Pre-master secret
         buf.extend_from_slice(&self.pre_master);
 
-        // Random
-        buf.extend_from_slice(&self.random);
+        // Random1
+        buf.extend_from_slice(&self.random1);
+
+        // Random2
+        buf.extend_from_slice(&self.random2);
 
         // Options string length + string
         let opts_bytes = self.options.as_bytes();
