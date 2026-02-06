@@ -36,7 +36,7 @@ tokio = { version = "1", features = ["full"] }
 
 # Cryptography - using audited, pure-Rust implementations
 ring = "0.17"
-rustls = "0.23"
+rustls = { version = "0.23", features = ["ring"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 ed25519-dalek = { version = "2", features = ["rand_core", "pem"] }
 chacha20poly1305 = "0.10"
