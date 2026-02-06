@@ -56,18 +56,30 @@ impl CipherSuite {
 /// Data channel encryption key with secure memory handling
 pub struct DataChannelKey {
     key: [u8; 32],
+    /// Implicit IV for AEAD nonce construction (XORed with packet counter)
+    implicit_iv: [u8; 12],
     cipher_suite: CipherSuite,
 }
 
 impl DataChannelKey {
-    /// Create a new data channel key
+    /// Create a new data channel key (with zero implicit IV for non-AEAD or tests)
     pub fn new(key: [u8; 32], cipher_suite: CipherSuite) -> Self {
-        Self { key, cipher_suite }
+        Self { key, implicit_iv: [0u8; 12], cipher_suite }
+    }
+
+    /// Create a new data channel key with implicit IV (for OpenVPN AEAD)
+    pub fn new_with_iv(key: [u8; 32], implicit_iv: [u8; 12], cipher_suite: CipherSuite) -> Self {
+        Self { key, implicit_iv, cipher_suite }
     }
 
     /// Get the cipher suite
     pub fn cipher_suite(&self) -> CipherSuite {
         self.cipher_suite
+    }
+
+    /// Get the implicit IV
+    pub fn implicit_iv(&self) -> &[u8; 12] {
+        &self.implicit_iv
     }
 
     /// Create a cipher instance
@@ -80,6 +92,7 @@ impl Drop for DataChannelKey {
     fn drop(&mut self) {
         use zeroize::Zeroize;
         self.key.zeroize();
+        self.implicit_iv.zeroize();
     }
 }
 
@@ -205,7 +218,13 @@ impl Cipher {
     }
 }
 
-/// Packet encryptor with automatic nonce management and replay protection
+/// Packet encryptor with automatic nonce management and replay protection.
+///
+/// Implements the OpenVPN AEAD data channel format:
+/// - 4-byte packet ID (big-endian counter)
+/// - Nonce = implicit_iv XOR padded(packet_id)
+/// - On-wire: [packet_id(4)] [AEAD_tag(16)] [ciphertext]
+/// - AAD = packet_id bytes (4 bytes)
 ///
 /// # Performance
 /// - Uses counter-based nonces (no RNG syscalls)
@@ -213,104 +232,136 @@ impl Cipher {
 /// - Pre-allocates output buffers with known capacity
 pub struct PacketCipher {
     cipher: Cipher,
-    /// Outgoing packet counter (used as nonce)
-    tx_counter: u64,
+    /// Implicit IV from key derivation, XORed with packet counter to form nonce
+    implicit_iv: [u8; 12],
+    /// Outgoing packet counter (32-bit, matching OpenVPN packet_id_type)
+    tx_counter: u32,
     /// Replay protection window
     rx_window: ReplayWindow,
 }
 
-/// Packet header size (8-byte counter)
-const PACKET_HEADER_SIZE: usize = 8;
+/// Packet ID header size (4-byte counter, matching OpenVPN)
+const PACKET_ID_SIZE: usize = 4;
 
 impl PacketCipher {
     /// Create a new packet cipher
     #[inline]
     pub fn new(key: DataChannelKey) -> Self {
+        let implicit_iv = *key.implicit_iv();
         Self {
             cipher: key.cipher(),
+            implicit_iv,
             tx_counter: 0,
             rx_window: ReplayWindow::new(),
         }
     }
 
-    /// Encrypt a packet
+    /// Build a 12-byte AEAD nonce from implicit IV and packet ID.
     ///
-    /// Returns: [8-byte packet_id | ciphertext | 16-byte tag]
+    /// nonce = implicit_iv XOR [packet_id_be(4) || 00000000(8)]
+    #[inline(always)]
+    fn build_nonce(&self, pid_bytes: &[u8; 4]) -> [u8; 12] {
+        let mut nonce = self.implicit_iv;
+        nonce[0] ^= pid_bytes[0];
+        nonce[1] ^= pid_bytes[1];
+        nonce[2] ^= pid_bytes[2];
+        nonce[3] ^= pid_bytes[3];
+        nonce
+    }
+
+    /// Encrypt a packet (OpenVPN AEAD format).
+    ///
+    /// Returns: [packet_id(4)] [AEAD_tag(16)] [ciphertext]
     #[inline]
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>> {
-        // Increment counter (fail if overflow - extremely unlikely)
         self.tx_counter = self.tx_counter.checked_add(1)
             .ok_or(CryptoError::EncryptionFailed("packet counter overflow"))?;
 
-        // Build nonce from counter (padded to 12 bytes)
-        // Using a fixed-size array and copy is faster than iteration
-        let mut nonce = [0u8; 12];
-        let packet_id = self.tx_counter.to_be_bytes();
-        nonce[4..].copy_from_slice(&packet_id);
+        let pid_bytes = self.tx_counter.to_be_bytes();
+        let nonce = self.build_nonce(&pid_bytes);
 
-        // Pre-allocate output with exact capacity
-        // Header (8) + plaintext + tag (16)
-        let output_len = PACKET_HEADER_SIZE + plaintext.len() + CipherSuite::TAG_SIZE;
-        let mut output = Vec::with_capacity(output_len);
+        // AEAD encrypt: produces ciphertext || tag
+        let ct_tag = self.cipher.encrypt(&nonce, plaintext, &pid_bytes)?;
 
-        // Write packet ID header
-        output.extend_from_slice(&packet_id);
+        // Rearrange to OpenVPN on-wire format: [pid(4)][tag(16)][ciphertext]
+        let ct_len = ct_tag.len() - CipherSuite::TAG_SIZE;
+        let tag = &ct_tag[ct_len..];
+        let ct = &ct_tag[..ct_len];
 
-        // Encrypt directly into output buffer
-        self.cipher.encrypt_into(&nonce, plaintext, &packet_id, &mut output)?;
+        let mut output = Vec::with_capacity(PACKET_ID_SIZE + CipherSuite::TAG_SIZE + ct_len);
+        output.extend_from_slice(&pid_bytes);
+        output.extend_from_slice(tag);
+        output.extend_from_slice(ct);
 
         Ok(output)
     }
 
     /// Encrypt a packet into a pre-allocated buffer
     ///
-    /// Returns the total bytes written (header + ciphertext + tag).
+    /// Returns the total bytes written.
     /// Buffer should be cleared before calling.
     #[inline]
     pub fn encrypt_into(&mut self, plaintext: &[u8], output: &mut Vec<u8>) -> Result<usize> {
         self.tx_counter = self.tx_counter.checked_add(1)
             .ok_or(CryptoError::EncryptionFailed("packet counter overflow"))?;
 
-        let mut nonce = [0u8; 12];
-        let packet_id = self.tx_counter.to_be_bytes();
-        nonce[4..].copy_from_slice(&packet_id);
+        let pid_bytes = self.tx_counter.to_be_bytes();
+        let nonce = self.build_nonce(&pid_bytes);
 
-        output.extend_from_slice(&packet_id);
-        let cipher_bytes = self.cipher.encrypt_into(&nonce, plaintext, &packet_id, output)?;
+        let ct_tag = self.cipher.encrypt(&nonce, plaintext, &pid_bytes)?;
 
-        Ok(PACKET_HEADER_SIZE + cipher_bytes)
+        let ct_len = ct_tag.len() - CipherSuite::TAG_SIZE;
+        let tag = &ct_tag[ct_len..];
+        let ct = &ct_tag[..ct_len];
+
+        let total = PACKET_ID_SIZE + CipherSuite::TAG_SIZE + ct_len;
+        output.extend_from_slice(&pid_bytes);
+        output.extend_from_slice(tag);
+        output.extend_from_slice(ct);
+
+        Ok(total)
     }
 
-    /// Decrypt a packet with replay protection
+    /// Decrypt a packet with replay protection (OpenVPN AEAD format).
+    ///
+    /// Expects: [packet_id(4)] [AEAD_tag(16)] [ciphertext]
     #[inline]
     pub fn decrypt(&mut self, packet: &[u8]) -> Result<Vec<u8>> {
-        const MIN_PACKET_SIZE: usize = PACKET_HEADER_SIZE + CipherSuite::TAG_SIZE;
+        const MIN_PACKET_SIZE: usize = PACKET_ID_SIZE + CipherSuite::TAG_SIZE;
 
         if packet.len() < MIN_PACKET_SIZE {
             return Err(CryptoError::DecryptionFailed);
         }
 
-        // Extract packet ID using array pattern matching (faster than slice ops)
-        let packet_id: [u8; 8] = packet[..8].try_into().unwrap();
-        let counter = u64::from_be_bytes(packet_id);
+        // Extract 4-byte packet ID
+        let pid_bytes: [u8; 4] = packet[..4].try_into().unwrap();
+        let counter = u32::from_be_bytes(pid_bytes) as u64;
 
-        // Check replay (inline for performance)
+        // Check replay
         if !self.rx_window.check_and_update(counter) {
             return Err(CryptoError::ReplayDetected);
         }
 
-        // Build nonce from packet ID
-        let mut nonce = [0u8; 12];
-        nonce[4..].copy_from_slice(&packet_id);
+        let nonce = self.build_nonce(&pid_bytes);
 
-        // Decrypt
-        self.cipher.decrypt(&nonce, &packet[8..], &packet_id)
+        // OpenVPN format: [pid(4)][tag(16)][ciphertext]
+        // AEAD library expects: [ciphertext][tag]
+        let tag = &packet[PACKET_ID_SIZE..PACKET_ID_SIZE + CipherSuite::TAG_SIZE];
+        let ct = &packet[PACKET_ID_SIZE + CipherSuite::TAG_SIZE..];
+
+        // Reassemble as ciphertext || tag for the AEAD library
+        let mut ct_tag = Vec::with_capacity(ct.len() + CipherSuite::TAG_SIZE);
+        ct_tag.extend_from_slice(ct);
+        ct_tag.extend_from_slice(tag);
+
+        // Decrypt with AAD = packet_id bytes
+        self.cipher.decrypt(&nonce, &ct_tag, &pid_bytes)
     }
 
     /// Get current TX counter (for debugging/stats)
     #[inline(always)]
     pub fn tx_counter(&self) -> u64 {
-        self.tx_counter
+        self.tx_counter as u64
     }
 }
 
@@ -431,10 +482,11 @@ mod tests {
 
     #[test]
     fn test_packet_cipher_replay_protection() {
-        let key = DataChannelKey::new([0x42u8; 32], CipherSuite::ChaCha20Poly1305);
+        let iv = [0xABu8; 12];
+        let key = DataChannelKey::new_with_iv([0x42u8; 32], iv, CipherSuite::ChaCha20Poly1305);
         let mut encryptor = PacketCipher::new(key);
 
-        let key2 = DataChannelKey::new([0x42u8; 32], CipherSuite::ChaCha20Poly1305);
+        let key2 = DataChannelKey::new_with_iv([0x42u8; 32], iv, CipherSuite::ChaCha20Poly1305);
         let mut decryptor = PacketCipher::new(key2);
 
         // Encrypt some packets

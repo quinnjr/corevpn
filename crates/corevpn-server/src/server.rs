@@ -627,13 +627,15 @@ async fn handle_control_packet(
                                             seed.extend_from_slice(&client_km.random2);
                                             seed.extend_from_slice(&server_random2);
 
+                                            // Step 1: Derive 48-byte master secret (matches OpenVPN's sizeof(master))
                                             match corevpn_crypto::openvpn_prf(
                                                 &combined_pre_master,
                                                 b"OpenVPN master secret",
                                                 &seed,
-                                                128,
+                                                48,
                                             ) {
                                                 Ok(master) => {
+                                                    // Step 2: Expand to 256-byte key block
                                                     match corevpn_crypto::openvpn_prf(
                                                         &master,
                                                         b"OpenVPN key expansion",
@@ -641,9 +643,12 @@ async fn handle_control_packet(
                                                         256,
                                                     ) {
                                                         Ok(key_block) => {
-                                                            let key_material = corevpn_crypto::KeyMaterial::from_raw_block(&key_block[..128]);
+                                                            // For AEAD ciphers (AES-256-GCM), OpenVPN reads
+                                                            // keys sequentially: cipher_key(32) + implicit_iv(12)
+                                                            // per direction = 88 bytes total
+                                                            let key_material = corevpn_crypto::KeyMaterial::from_openvpn_aead_key_block(&key_block);
                                                             conn.protocol.install_keys(&key_material, true);
-                                                            debug!("Derived data channel keys via PRF for {}", peer_addr);
+                                                            debug!("Derived data channel keys via PRF for {} (master=48, block=256, AEAD layout)", peer_addr);
                                                         }
                                                         Err(e) => {
                                                             warn!("Key expansion failed for {}: {}", peer_addr, e);

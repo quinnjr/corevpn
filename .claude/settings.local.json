@@ -2,7 +2,12 @@
   "permissions": {
     "allow": [
       "Bash(mkdir:*)",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfix: use static linking for musl to eliminate libgcc runtime dependency\n\nChange RUSTFLAGS from -crt-static to +crt-static so binaries are fully\nstatically linked. This removes the need for libgcc in the runtime image\nand prevents missing shared library errors at deploy time.\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nrelease: bump version to v0.3.0\n\n- Update workspace version and internal crate dependencies to 0.3.0\n- Update Helm chart version and appVersion to 0.3.0\n- Fix Docker build: use +crt-static for fully static musl binaries,\n  removing the libgcc runtime dependency\nEOF\n\\)\")",
+      "Bash(cargo publish:*)"
     ]
   }
 }

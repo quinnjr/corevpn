@@ -15,10 +15,14 @@ pub struct KeyMaterial {
     pub client_write_key: [u8; 32],
     /// Server -> Client encryption key
     pub server_write_key: [u8; 32],
-    /// Client -> Server HMAC key (for tls-auth)
+    /// Client -> Server HMAC key (for tls-auth / non-AEAD)
     pub client_hmac_key: [u8; 32],
-    /// Server -> Client HMAC key (for tls-auth)
+    /// Server -> Client HMAC key (for tls-auth / non-AEAD)
     pub server_hmac_key: [u8; 32],
+    /// Client -> Server implicit IV (for AEAD ciphers, 12 bytes)
+    pub client_implicit_iv: [u8; 12],
+    /// Server -> Client implicit IV (for AEAD ciphers, 12 bytes)
+    pub server_implicit_iv: [u8; 12],
 }
 
 /// Derive key material from a shared secret
@@ -52,6 +56,8 @@ pub fn derive_keys(
         server_write_key: [0u8; 32],
         client_hmac_key: [0u8; 32],
         server_hmac_key: [0u8; 32],
+        client_implicit_iv: [0u8; 12],
+        server_implicit_iv: [0u8; 12],
     };
 
     material.client_write_key.copy_from_slice(&okm[0..32]);
@@ -67,7 +73,7 @@ pub fn derive_keys(
 }
 
 impl KeyMaterial {
-    /// Create key material from a raw key block (e.g., from TLS EKM or PRF output)
+    /// Create key material from a raw key block (legacy layout, 128 bytes)
     ///
     /// Expected layout (128 bytes minimum):
     /// - bytes 0..32: client write key
@@ -80,6 +86,8 @@ impl KeyMaterial {
             server_write_key: [0u8; 32],
             client_hmac_key: [0u8; 32],
             server_hmac_key: [0u8; 32],
+            client_implicit_iv: [0u8; 12],
+            server_implicit_iv: [0u8; 12],
         };
         material.client_write_key.copy_from_slice(&block[0..32]);
         material.server_write_key.copy_from_slice(&block[32..64]);
@@ -88,14 +96,40 @@ impl KeyMaterial {
         material
     }
 
-    /// Create data channel keys for the client side
-    pub fn client_data_key(&self, suite: CipherSuite) -> DataChannelKey {
-        DataChannelKey::new(self.client_write_key, suite)
+    /// Create key material from an OpenVPN PRF key block for AEAD ciphers.
+    ///
+    /// OpenVPN reads the key block sequentially using cipher_kl and iv_kl strides:
+    /// - bytes 0..32: client cipher key (AES-256 = 32 bytes)
+    /// - bytes 32..44: client implicit IV (GCM nonce = 12 bytes)
+    /// - bytes 44..76: server cipher key
+    /// - bytes 76..88: server implicit IV
+    ///
+    /// The implicit IVs are XORed with the per-packet counter to form the AEAD nonce.
+    pub fn from_openvpn_aead_key_block(block: &[u8]) -> Self {
+        assert!(block.len() >= 88, "AEAD key block must be at least 88 bytes");
+        let mut material = Self {
+            client_write_key: [0u8; 32],
+            server_write_key: [0u8; 32],
+            client_hmac_key: [0u8; 32],
+            server_hmac_key: [0u8; 32],
+            client_implicit_iv: [0u8; 12],
+            server_implicit_iv: [0u8; 12],
+        };
+        material.client_write_key.copy_from_slice(&block[0..32]);
+        material.client_implicit_iv.copy_from_slice(&block[32..44]);
+        material.server_write_key.copy_from_slice(&block[44..76]);
+        material.server_implicit_iv.copy_from_slice(&block[76..88]);
+        material
     }
 
-    /// Create data channel keys for the server side
+    /// Create data channel keys for the client side (includes implicit IV for AEAD)
+    pub fn client_data_key(&self, suite: CipherSuite) -> DataChannelKey {
+        DataChannelKey::new_with_iv(self.client_write_key, self.client_implicit_iv, suite)
+    }
+
+    /// Create data channel keys for the server side (includes implicit IV for AEAD)
     pub fn server_data_key(&self, suite: CipherSuite) -> DataChannelKey {
-        DataChannelKey::new(self.server_write_key, suite)
+        DataChannelKey::new_with_iv(self.server_write_key, self.server_implicit_iv, suite)
     }
 }
 
