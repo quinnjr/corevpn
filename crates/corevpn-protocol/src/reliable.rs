@@ -356,15 +356,15 @@ mod tests {
         let mut transport = ReliableTransport::new(ReliableConfig::default());
 
         // Receive packet 0
-        let data = transport.receive(0, Bytes::from_static(b"first"));
+        let data = transport.receive(0, Bytes::from_static(b"first")).unwrap();
         assert!(data.is_some());
 
         // Receive packet 2 (out of order)
-        let data = transport.receive(2, Bytes::from_static(b"third"));
+        let data = transport.receive(2, Bytes::from_static(b"third")).unwrap();
         assert!(data.is_none()); // Buffered
 
         // Receive packet 1
-        let data = transport.receive(1, Bytes::from_static(b"second"));
+        let data = transport.receive(1, Bytes::from_static(b"second")).unwrap();
         assert!(data.is_some());
 
         // Packet 2 should now be deliverable (in a real impl)

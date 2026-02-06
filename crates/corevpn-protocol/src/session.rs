@@ -256,6 +256,13 @@ impl ProtocolSession {
                     // Accept the session ID but we'll use our own for the response
                     self.remote_session_id = Some(remote_sid);
                 }
+
+                // Queue ACK for the client's hard reset packet via the reliable
+                // transport so it will be included in our response
+                if let Some(packet_id) = ctrl.message_packet_id {
+                    let _ = self.reliable.receive(packet_id, Bytes::new())?;
+                }
+
                 self.state = ProtocolState::TlsHandshake;
 
                 Ok(ProcessedPacket::HardReset {
@@ -313,6 +320,11 @@ impl ProtocolSession {
 
     /// Create a hard reset response packet
     pub fn create_hard_reset_response(&mut self) -> Result<Bytes> {
+        // Register with reliable transport to get a message_packet_id.
+        // OpenVPN requires all control packets (including hard resets) to
+        // carry a message_packet_id for the reliable transport layer.
+        let (packet_id, _) = self.reliable.send(Bytes::new())?;
+
         let packet = crate::packet::ControlPacketData {
             header: crate::PacketHeader {
                 opcode: OpCode::HardResetServerV2,
@@ -324,7 +336,7 @@ impl ProtocolSession {
             },
             remote_session_id: self.remote_session_id,
             acks: self.reliable.get_acks(),
-            message_packet_id: None,
+            message_packet_id: Some(packet_id),
             payload: Bytes::new(),
         };
 
@@ -528,10 +540,51 @@ mod tests {
             0x38, // opcode=7 (HardResetClientV2), key_id=0
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, // session_id
             0x00, // ack_count = 0
+            0x00, 0x00, 0x00, 0x00, // message_packet_id = 0
         ];
 
         let result = session.process_packet(&hard_reset).unwrap();
         matches!(result, ProcessedPacket::HardReset { .. });
         assert_eq!(session.state(), ProtocolState::TlsHandshake);
+    }
+
+    #[test]
+    fn test_hard_reset_response_has_packet_id() {
+        let mut session = ProtocolSession::new_server(CipherSuite::ChaCha20Poly1305);
+
+        // Process client hard reset first
+        let hard_reset = [
+            0x38, // opcode=7 (HardResetClientV2), key_id=0
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, // session_id
+            0x00, // ack_count = 0
+            0x00, 0x00, 0x00, 0x00, // message_packet_id = 0
+        ];
+        session.process_packet(&hard_reset).unwrap();
+
+        // Create response and verify it contains message_packet_id
+        let response = session.create_hard_reset_response().unwrap();
+
+        // Response format (no tls-auth):
+        // [0]    opcode + key_id (HardResetServerV2 = 0x40)
+        // [1-8]  session_id (8 bytes)
+        // [9]    ack_count (should be 1 - ACK of client's packet 0)
+        // [10-13] ack_id[0] (4 bytes, value 0)
+        // [14-21] remote_session_id (8 bytes)
+        // [22-25] message_packet_id (4 bytes, value 0)
+        assert!(response.len() >= 26, "Response too short: {} bytes", response.len());
+
+        // Verify opcode is HardResetServerV2 (opcode=8, key_id=0 → 0x40)
+        assert_eq!(response[0], 0x40);
+
+        // Verify ack_count = 1 (ACK of client's hard reset)
+        assert_eq!(response[9], 1);
+
+        // Verify ACK'd packet_id = 0
+        let ack_id = u32::from_be_bytes(response[10..14].try_into().unwrap());
+        assert_eq!(ack_id, 0);
+
+        // Verify message_packet_id = 0 (first outgoing packet)
+        let msg_pid = u32::from_be_bytes(response[22..26].try_into().unwrap());
+        assert_eq!(msg_pid, 0);
     }
 }

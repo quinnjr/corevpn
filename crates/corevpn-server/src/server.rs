@@ -15,7 +15,7 @@ use tracing::{info, warn, error, debug, trace};
 
 use corevpn_config::{ConnectionLogMode, ServerConfig};
 use corevpn_core::{SessionManager, AddressPool};
-use corevpn_crypto::CipherSuite;
+use corevpn_crypto::{CipherSuite, HmacAuth, parse_static_key};
 use corevpn_protocol::{
     OpCode, ProtocolSession, ProtocolState, ProcessedPacket,
     TlsHandler, create_server_config, load_certs_from_pem, load_key_from_pem,
@@ -102,6 +102,8 @@ pub struct VpnServer {
     address_pool: AddressPool,
     connections: ConnectionMap,
     tls_config: Option<Arc<rustls::ServerConfig>>,
+    /// tls-auth HMAC key (loaded from ta.key)
+    tls_auth_key: Option<Arc<[u8; 256]>>,
     /// Connection logger
     connection_logger: Arc<dyn ConnectionLogger>,
     /// Event anonymizer (if configured)
@@ -124,6 +126,9 @@ impl VpnServer {
 
         // Load TLS configuration
         let tls_config = Self::load_tls_config(&config)?;
+
+        // Load tls-auth key if enabled
+        let tls_auth_key = Self::load_tls_auth_key(&config);
 
         // Initialize connection logger
         let connection_logger = create_logger(&config.logging).await?;
@@ -168,6 +173,7 @@ impl VpnServer {
             address_pool,
             connections: Arc::new(RwLock::new(HashMap::new())),
             tls_config,
+            tls_auth_key,
             connection_logger,
             anonymizer,
         })
@@ -210,6 +216,36 @@ impl VpnServer {
             .map_err(|e| anyhow::anyhow!("Failed to create TLS config: {}", e))?;
 
         Ok(Some(tls_config))
+    }
+
+    /// Load tls-auth key from ta.key file if tls_auth is enabled in config
+    fn load_tls_auth_key(config: &ServerConfig) -> Option<Arc<[u8; 256]>> {
+        if !config.security.tls_auth {
+            return None;
+        }
+
+        let ta_path = config.ta_key_path();
+        if !ta_path.exists() {
+            warn!("tls-auth enabled but ta.key not found at {:?}", ta_path);
+            return None;
+        }
+
+        match std::fs::read_to_string(&ta_path) {
+            Ok(pem) => match parse_static_key(&pem) {
+                Ok(key) => {
+                    info!("tls-auth key loaded from {:?}", ta_path);
+                    Some(Arc::new(key))
+                }
+                Err(e) => {
+                    warn!("Failed to parse tls-auth key: {}", e);
+                    None
+                }
+            },
+            Err(e) => {
+                warn!("Failed to read tls-auth key file: {}", e);
+                None
+            }
+        }
     }
 
     /// Get cipher suite from config
@@ -394,6 +430,18 @@ async fn handle_hard_reset(
     let cipher_suite = server.get_cipher_suite();
     let mut conn = Connection::new(peer_addr, cipher_suite, connection_id);
 
+    // Enable tls-auth if key is loaded
+    if let Some(ref ta_key) = server.tls_auth_key {
+        match HmacAuth::from_ta_key(ta_key, true, None) {
+            Ok(hmac_auth) => {
+                conn.protocol.set_tls_auth(hmac_auth);
+            }
+            Err(e) => {
+                warn!("Failed to create HMAC auth for {}: {}", peer_addr, e);
+            }
+        }
+    }
+
     // Process hard reset
     let _result = conn.protocol.process_packet(data)?;
 
@@ -447,16 +495,22 @@ async fn handle_control_packet(
 
         match result {
             ProcessedPacket::TlsData(records) => {
+                debug!("Received {} TLS record(s) from {}", records.len(), peer_addr);
+
                 // Pass TLS records to TLS handler
                 if let Some(ref mut tls) = conn.tls {
                     tls.process_tls_records(records)
-                        .map_err(|e| anyhow::anyhow!("TLS processing failed: {}", e))?;
+                        .map_err(|e| {
+                            warn!("TLS processing failed for {}: {}", peer_addr, e);
+                            anyhow::anyhow!("TLS processing failed: {}", e)
+                        })?;
 
                     // If TLS handler wants to write, get the data
                     while tls.wants_write() {
                         if let Some(tls_out) = tls.get_outgoing()
                             .map_err(|e| anyhow::anyhow!("TLS outgoing failed: {}", e))?
                         {
+                            debug!("Sending {} bytes of TLS data to {}", tls_out.len(), peer_addr);
                             // Wrap TLS data in control packet
                             let ctrl_packet = conn.protocol.create_control_packet(tls_out)?;
                             pending_packets.push(ctrl_packet);
@@ -490,6 +544,8 @@ async fn handle_control_packet(
                                 ));
                         }
                     }
+                } else {
+                    warn!("Received TLS data from {} but no TLS handler configured", peer_addr);
                 }
             }
             ProcessedPacket::HardReset { session_id: _ } => {

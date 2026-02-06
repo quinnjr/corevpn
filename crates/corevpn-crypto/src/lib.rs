@@ -27,7 +27,7 @@ pub use keys::{
 };
 pub use cipher::{Cipher, CipherSuite, DataChannelKey, PacketCipher};
 pub use kdf::{derive_keys, KeyMaterial};
-pub use cert::{CertificateAuthority, Certificate, CertificateRequest};
+pub use cert::{CertificateAuthority, Certificate, CertificateRequest, parse_static_key};
 pub use hmac_auth::HmacAuth;
 
 /// Securely generate random bytes
