@@ -59,10 +59,9 @@ RUN apt-get update \
         # TLS/crypto runtime
         libssl3 \
         ca-certificates \
-        # Networking tools for VPN
+        # Networking tools for VPN (iptables includes ip6tables on Debian)
         iproute2 \
         iptables \
-        ip6tables \
         # Process management
         tini \
         # Process tools for healthcheck
