@@ -608,62 +608,82 @@ async fn handle_control_packet(
                                             }
                                         }
 
-                                        // Derive data channel keys using TLS EKM
-                                        // EKM context uses random1 from both sides
-                                        let ekm_label = b"EXPORTER-OpenVPN-datakeys".to_vec();
-                                        let mut ekm_context = Vec::new();
-                                        ekm_context.extend_from_slice(&client_km.random1);
-                                        ekm_context.extend_from_slice(&server_random1);
-                                        let mut key_block = vec![0u8; 256];
+                                        // Check if client supports EKM via IV_PROTO
+                                        // IV_PROTO bit 4 (0x10) = tls-key-export (EKM)
+                                        let client_supports_ekm = if let Some(ref pi) = client_km.peer_info {
+                                            pi.lines()
+                                                .find(|l| l.starts_with("IV_PROTO="))
+                                                .and_then(|l| l.trim_start_matches("IV_PROTO=").parse::<u32>().ok())
+                                                .map(|proto| proto & 0x10 != 0)
+                                                .unwrap_or(false)
+                                        } else {
+                                            false
+                                        };
 
-                                        match tls.export_keying_material(&mut key_block, &ekm_label, Some(&ekm_context)) {
-                                            Ok(()) => {
-                                                debug!("Derived data channel keys via TLS EKM for {}", peer_addr);
-                                                // Key block layout: client_cipher_key(32) + server_cipher_key(32) + client_hmac_key(32) + server_hmac_key(32)
-                                                let key_material = corevpn_crypto::KeyMaterial::from_raw_block(&key_block[..128]);
-                                                conn.protocol.install_keys(&key_material, true);
-                                            }
-                                            Err(e) => {
-                                                debug!("EKM not available ({}), falling back to PRF key derivation for {}", e, peer_addr);
-                                                // Fallback: use OpenVPN PRF with pre-master secrets
-                                                let mut combined_pre_master = [0u8; 48];
-                                                for i in 0..48 {
-                                                    combined_pre_master[i] = client_km.pre_master[i] ^ server_pre_master[i];
+                                        let use_ekm = if client_supports_ekm {
+                                            // Try EKM if client supports it
+                                            let ekm_label = b"EXPORTER-OpenVPN-datakeys".to_vec();
+                                            let mut ekm_context = Vec::new();
+                                            ekm_context.extend_from_slice(&client_km.random1);
+                                            ekm_context.extend_from_slice(&server_random1);
+                                            let mut key_block = vec![0u8; 256];
+
+                                            match tls.export_keying_material(&mut key_block, &ekm_label, Some(&ekm_context)) {
+                                                Ok(()) => {
+                                                    debug!("Derived data channel keys via TLS EKM for {}", peer_addr);
+                                                    let key_material = corevpn_crypto::KeyMaterial::from_raw_block(&key_block[..128]);
+                                                    conn.protocol.install_keys(&key_material, true);
+                                                    true
                                                 }
-                                                // PRF seed: client.random1 + server.random1 + client.random2 + server.random2
-                                                let mut seed = Vec::new();
-                                                seed.extend_from_slice(&client_km.random1);
-                                                seed.extend_from_slice(&server_random1);
-                                                seed.extend_from_slice(&client_km.random2);
-                                                seed.extend_from_slice(&server_random2);
+                                                Err(e) => {
+                                                    debug!("EKM failed ({}), falling back to PRF for {}", e, peer_addr);
+                                                    false
+                                                }
+                                            }
+                                        } else {
+                                            debug!("Client does not support EKM (IV_PROTO missing tls-key-export bit), using PRF for {}", peer_addr);
+                                            false
+                                        };
 
-                                                match corevpn_crypto::openvpn_prf(
-                                                    &combined_pre_master,
-                                                    b"OpenVPN master secret",
-                                                    &seed,
-                                                    128,
-                                                ) {
-                                                    Ok(master) => {
-                                                        // Expand master secret to key block
-                                                        match corevpn_crypto::openvpn_prf(
-                                                            &master,
-                                                            b"OpenVPN key expansion",
-                                                            &seed,
-                                                            256,
-                                                        ) {
-                                                            Ok(key_block) => {
-                                                                let key_material = corevpn_crypto::KeyMaterial::from_raw_block(&key_block[..128]);
-                                                                conn.protocol.install_keys(&key_material, true);
-                                                                debug!("Derived data channel keys via PRF for {}", peer_addr);
-                                                            }
-                                                            Err(e) => {
-                                                                warn!("Key expansion failed for {}: {}", peer_addr, e);
-                                                            }
+                                        if !use_ekm {
+                                            // Use OpenVPN PRF with pre-master secrets
+                                            let mut combined_pre_master = [0u8; 48];
+                                            for i in 0..48 {
+                                                combined_pre_master[i] = client_km.pre_master[i] ^ server_pre_master[i];
+                                            }
+                                            // PRF seed: client.random1 + server.random1 + client.random2 + server.random2
+                                            let mut seed = Vec::new();
+                                            seed.extend_from_slice(&client_km.random1);
+                                            seed.extend_from_slice(&server_random1);
+                                            seed.extend_from_slice(&client_km.random2);
+                                            seed.extend_from_slice(&server_random2);
+
+                                            match corevpn_crypto::openvpn_prf(
+                                                &combined_pre_master,
+                                                b"OpenVPN master secret",
+                                                &seed,
+                                                128,
+                                            ) {
+                                                Ok(master) => {
+                                                    // Expand master secret to key block
+                                                    match corevpn_crypto::openvpn_prf(
+                                                        &master,
+                                                        b"OpenVPN key expansion",
+                                                        &seed,
+                                                        256,
+                                                    ) {
+                                                        Ok(key_block) => {
+                                                            let key_material = corevpn_crypto::KeyMaterial::from_raw_block(&key_block[..128]);
+                                                            conn.protocol.install_keys(&key_material, true);
+                                                            debug!("Derived data channel keys via PRF for {}", peer_addr);
+                                                        }
+                                                        Err(e) => {
+                                                            warn!("Key expansion failed for {}: {}", peer_addr, e);
                                                         }
                                                     }
-                                                    Err(e) => {
-                                                        warn!("PRF key derivation failed for {}: {}", peer_addr, e);
-                                                    }
+                                                }
+                                                Err(e) => {
+                                                    warn!("PRF key derivation failed for {}: {}", peer_addr, e);
                                                 }
                                             }
                                         }
