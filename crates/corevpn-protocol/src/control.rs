@@ -520,7 +520,16 @@ impl KeyMethodV2 {
         Ok(s.trim_end_matches('\0').to_string())
     }
 
-    /// Encode to bytes
+    /// Write a null-terminated string in OpenVPN's wire format:
+    /// u16 length (including null terminator) + string bytes + null byte
+    fn write_string(buf: &mut Vec<u8>, s: &str) {
+        let len = s.len() + 1; // include null terminator
+        buf.extend_from_slice(&(len as u16).to_be_bytes());
+        buf.extend_from_slice(s.as_bytes());
+        buf.push(0); // null terminator
+    }
+
+    /// Encode to bytes (OpenVPN key_method_v2 wire format)
     pub fn encode(&self) -> Vec<u8> {
         let mut buf = Vec::new();
 
@@ -530,43 +539,35 @@ impl KeyMethodV2 {
         // Key method (2)
         buf.push(2);
 
-        // Pre-master secret
+        // Pre-master secret (48 bytes)
         buf.extend_from_slice(&self.pre_master);
 
-        // Random1
+        // Random1 (32 bytes)
         buf.extend_from_slice(&self.random1);
 
-        // Random2
+        // Random2 (32 bytes)
         buf.extend_from_slice(&self.random2);
 
-        // Options string length + string
-        let opts_bytes = self.options.as_bytes();
-        buf.extend_from_slice(&(opts_bytes.len() as u16).to_be_bytes());
-        buf.extend_from_slice(opts_bytes);
+        // Options string (null-terminated, length includes null)
+        Self::write_string(&mut buf, &self.options);
 
-        // Username (optional)
+        // Username (optional, null-terminated)
         if let Some(username) = &self.username {
-            let username_bytes = username.as_bytes();
-            buf.extend_from_slice(&(username_bytes.len() as u16).to_be_bytes());
-            buf.extend_from_slice(username_bytes);
+            Self::write_string(&mut buf, username);
         } else {
-            buf.extend_from_slice(&0u16.to_be_bytes());
+            Self::write_string(&mut buf, "");
         }
 
-        // Password (optional)
+        // Password (optional, null-terminated)
         if let Some(password) = &self.password {
-            let password_bytes = password.as_bytes();
-            buf.extend_from_slice(&(password_bytes.len() as u16).to_be_bytes());
-            buf.extend_from_slice(password_bytes);
+            Self::write_string(&mut buf, password);
         } else {
-            buf.extend_from_slice(&0u16.to_be_bytes());
+            Self::write_string(&mut buf, "");
         }
 
-        // Peer info (optional)
+        // Peer info (optional, null-terminated)
         if let Some(peer_info) = &self.peer_info {
-            let peer_info_bytes = peer_info.as_bytes();
-            buf.extend_from_slice(&(peer_info_bytes.len() as u16).to_be_bytes());
-            buf.extend_from_slice(peer_info_bytes);
+            Self::write_string(&mut buf, peer_info);
         }
 
         buf
