@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -25,11 +25,11 @@ categories = ["network-programming", "cryptography", "authentication"]
 
 [workspace.dependencies]
 # Internal crates - version required for publishing, path for local development
-corevpn-crypto = { version = "0.2.0", path = "crates/corevpn-crypto" }
-corevpn-core = { version = "0.2.0", path = "crates/corevpn-core" }
-corevpn-protocol = { version = "0.2.0", path = "crates/corevpn-protocol" }
-corevpn-auth = { version = "0.2.0", path = "crates/corevpn-auth" }
-corevpn-config = { version = "0.2.0", path = "crates/corevpn-config" }
+corevpn-crypto = { version = "0.3.0", path = "crates/corevpn-crypto" }
+corevpn-core = { version = "0.3.0", path = "crates/corevpn-core" }
+corevpn-protocol = { version = "0.3.0", path = "crates/corevpn-protocol" }
+corevpn-auth = { version = "0.3.0", path = "crates/corevpn-auth" }
+corevpn-config = { version = "0.3.0", path = "crates/corevpn-config" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

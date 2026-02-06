@@ -2,8 +2,8 @@ apiVersion: v2
 name: corevpn
 description: A Helm chart for CoreVPN - Secure OpenVPN-compatible VPN server with OAuth2 support
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.3.0
+appVersion: "0.3.0"
 
 home: https://github.com/pegasusheavy/corevpn
 sources:
