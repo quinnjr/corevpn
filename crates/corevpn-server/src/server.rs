@@ -564,7 +564,8 @@ async fn handle_control_packet(
                                         };
 
                                         // Send server's key_method_v2 via TLS
-                                        let km_bytes = server_km.encode();
+                                        // is_server=true: omit pre_master from key source
+                                        let km_bytes = server_km.encode(true);
                                         debug!("Sending {} bytes of key_method_v2 to {}", km_bytes.len(), peer_addr);
                                         if let Err(e) = tls.write_plaintext(&km_bytes) {
                                             warn!("Failed to send key_method_v2 to {}: {}", peer_addr, e);

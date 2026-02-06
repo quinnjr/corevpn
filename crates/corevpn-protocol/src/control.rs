@@ -530,7 +530,12 @@ impl KeyMethodV2 {
     }
 
     /// Encode to bytes (OpenVPN key_method_v2 wire format)
-    pub fn encode(&self) -> Vec<u8> {
+    ///
+    /// When `is_server` is true (server writing its response), pre_master is
+    /// NOT included in the key source material -- only random1 and random2.
+    /// When `is_server` is false (client writing), pre_master IS included.
+    /// This matches the OpenVPN key_source2_randomize_write asymmetry.
+    pub fn encode(&self, is_server: bool) -> Vec<u8> {
         let mut buf = Vec::new();
 
         // Literal 0
@@ -539,8 +544,12 @@ impl KeyMethodV2 {
         // Key method (2)
         buf.push(2);
 
-        // Pre-master secret (48 bytes)
-        buf.extend_from_slice(&self.pre_master);
+        // Key source material:
+        // Client writes: pre_master(48) + random1(32) + random2(32) = 112 bytes
+        // Server writes: random1(32) + random2(32) = 64 bytes
+        if !is_server {
+            buf.extend_from_slice(&self.pre_master);
+        }
 
         // Random1 (32 bytes)
         buf.extend_from_slice(&self.random1);
