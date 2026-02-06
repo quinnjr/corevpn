@@ -48,6 +48,8 @@ struct Connection {
     auth_method: AuthMethod,
     /// Transfer statistics
     stats: TransferStats,
+    /// Cached hard reset response for retransmission on UDP retries
+    hard_reset_response: Option<Bytes>,
 }
 
 impl Connection {
@@ -63,6 +65,7 @@ impl Connection {
             username: None,
             auth_method: AuthMethod::Unknown,
             stats: TransferStats::default(),
+            hard_reset_response: None,
         }
     }
 
@@ -359,6 +362,23 @@ async fn handle_hard_reset(
     peer_addr: SocketAddr,
     data: &[u8],
 ) -> Result<()> {
+    // Check if we already have a non-stale connection from this peer.
+    // If so, this is a UDP retransmit — resend the cached response
+    // instead of creating a new session (which would change the session ID
+    // and confuse the client).
+    {
+        let connections = server.connections.read();
+        if let Some(existing) = connections.get(&peer_addr) {
+            if !existing.is_stale(Duration::from_secs(30)) {
+                if let Some(ref cached_response) = existing.hard_reset_response {
+                    debug!("Retransmitting cached hard reset response to {} (UDP retry)", peer_addr);
+                    socket.send_to(cached_response, peer_addr).await?;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     info!("New connection from {}", peer_addr);
 
     // Create connection ID for logging
@@ -384,9 +404,10 @@ async fn handle_hard_reset(
         conn.tls = Some(tls);
     }
 
-    // Send hard reset response
+    // Send hard reset response and cache it for retransmission
     let response = conn.protocol.create_hard_reset_response()?;
     socket.send_to(&response, peer_addr).await?;
+    conn.hard_reset_response = Some(response.clone());
 
     debug!("Sent hard reset response to {}", peer_addr);
 
