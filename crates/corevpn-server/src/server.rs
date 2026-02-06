@@ -676,12 +676,18 @@ async fn handle_control_packet(
                                                     .map(|ip| ip.to_string())
                                                     .unwrap_or_else(|| "10.8.0.1".to_string());
 
-                                                info!("Assigned VPN IP {} to {}", client_ip, peer_addr);
+                                                // Compute subnet mask from config subnet (e.g., "10.8.0.0/24" -> "255.255.255.0")
+                                                let subnet_mask = server.config.network.subnet.parse::<ipnet::Ipv4Net>()
+                                                    .map(|net| net.netmask().to_string())
+                                                    .unwrap_or_else(|_| "255.255.255.0".to_string());
+
+                                                info!("Assigned VPN IP {} to {} (gateway: {}, mask: {})", client_ip, peer_addr, gateway_ip, subnet_mask);
 
                                                 conn.vpn_ip = vpn_addr.ipv4;
 
                                                 let mut push_reply = corevpn_protocol::PushReply::default();
-                                                push_reply.ifconfig = Some((client_ip.clone(), gateway_ip.clone()));
+                                                // For topology subnet, ifconfig needs (client_ip, subnet_mask) not (client_ip, gateway_ip)
+                                                push_reply.ifconfig = Some((client_ip.clone(), subnet_mask));
                                                 push_reply.topology = corevpn_protocol::Topology::Subnet;
 
                                                 // Add DNS from config
