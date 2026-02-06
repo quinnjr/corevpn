@@ -545,6 +545,30 @@ async fn handle_control_packet(
                                             conn.username = Some(user.clone());
                                         }
 
+                                        // Negotiate cipher via NCP (Negotiable Crypto Parameters)
+                                        // Parse client's IV_CIPHERS from peer_info
+                                        let negotiated_cipher = if let Some(ref pi) = client_km.peer_info {
+                                            // Extract IV_CIPHERS line
+                                            let client_ciphers: Vec<&str> = pi.lines()
+                                                .find(|l| l.starts_with("IV_CIPHERS="))
+                                                .map(|l| l.trim_start_matches("IV_CIPHERS="))
+                                                .unwrap_or("")
+                                                .split(':')
+                                                .filter(|s| !s.is_empty())
+                                                .collect();
+                                            // Pick first cipher from client list that we support
+                                            let server_cipher = server.config.security.cipher.to_uppercase();
+                                            // Server supports AES-256-GCM, AES-128-GCM, CHACHA20-POLY1305
+                                            let supported = ["AES-256-GCM", "AES-128-GCM", "CHACHA20-POLY1305"];
+                                            client_ciphers.iter()
+                                                .find(|c| supported.contains(&c.to_uppercase().as_str()))
+                                                .map(|c| c.to_string())
+                                                .unwrap_or_else(|| server_cipher.clone())
+                                        } else {
+                                            server.config.security.cipher.to_uppercase()
+                                        };
+                                        debug!("Negotiated cipher: {} for {}", negotiated_cipher, peer_addr);
+
                                         // Generate server's key_method_v2
                                         let server_pre_master: [u8; 48] = corevpn_crypto::random_bytes();
                                         let server_random1: [u8; 32] = corevpn_crypto::random_bytes();
@@ -555,8 +579,8 @@ async fn handle_control_packet(
                                             random1: server_random1,
                                             random2: server_random2,
                                             options: format!(
-                                                "V4,dev-type tun,link-mtu 1560,tun-mtu 1500,proto UDPv4,cipher {},auth SHA256,keysize 256,key-method 2,tls-server",
-                                                server.config.security.cipher
+                                                "V4,dev-type tun,link-mtu 1560,tun-mtu 1500,proto UDPv4,cipher {},auth [null-digest],keysize 256,key-method 2,tls-server",
+                                                negotiated_cipher
                                             ),
                                             username: None,
                                             password: None,
@@ -670,6 +694,9 @@ async fn handle_control_packet(
 
                                                 push_reply.ping = 10;
                                                 push_reply.ping_restart = 60;
+
+                                                // Push negotiated cipher for NCP
+                                                push_reply.options.push(format!("cipher {}", negotiated_cipher));
 
                                                 // Send PUSH_REPLY through TLS
                                                 let reply_str = push_reply.encode();
