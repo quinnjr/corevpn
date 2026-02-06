@@ -647,6 +647,11 @@ async fn handle_control_packet(
                                                             // keys sequentially: cipher_key(32) + implicit_iv(12)
                                                             // per direction = 88 bytes total
                                                             let key_material = corevpn_crypto::KeyMaterial::from_openvpn_aead_key_block(&key_block);
+                                                            debug!("Key block first 88 bytes: {:02x?}", &key_block[..88]);
+                                                            debug!("Server encrypt key (key[0]): {:02x?}", &key_material.server_write_key[..8]);
+                                                            debug!("Server encrypt IV: {:02x?}", &key_material.server_implicit_iv);
+                                                            debug!("Client encrypt key (key[1]): {:02x?}", &key_material.client_write_key[..8]);
+                                                            debug!("Client encrypt IV: {:02x?}", &key_material.client_implicit_iv);
                                                             conn.protocol.install_keys(&key_material, true);
                                                             debug!("Derived data channel keys via PRF for {} (master=48, block=256, AEAD layout)", peer_addr);
                                                         }
@@ -832,6 +837,13 @@ async fn handle_data_packet(
 
     // Track incoming bytes
     conn.add_bytes_rx(data.len() as u64);
+
+    // Debug: log first bytes of data packet for crypto debugging
+    let payload_start = if data.len() > 4 { 4 } else { 1 }; // skip opcode+peer_id for V2
+    if data.len() > payload_start + 20 {
+        debug!("Data packet from {}: len={}, payload first 24 bytes: {:02x?}",
+            peer_addr, data.len(), &data[payload_start..payload_start+24.min(data.len()-payload_start)]);
+    }
 
     // Process data packet
     let result = conn.protocol.process_packet(data)?;

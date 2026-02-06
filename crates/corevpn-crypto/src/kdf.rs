@@ -98,11 +98,14 @@ impl KeyMaterial {
 
     /// Create key material from an OpenVPN PRF key block for AEAD ciphers.
     ///
-    /// OpenVPN reads the key block sequentially using cipher_kl and iv_kl strides:
-    /// - bytes 0..32: client cipher key (AES-256 = 32 bytes)
-    /// - bytes 32..44: client implicit IV (GCM nonce = 12 bytes)
-    /// - bytes 44..76: server cipher key
-    /// - bytes 76..88: server implicit IV
+    /// OpenVPN reads the key block sequentially using cipher_kl and iv_kl strides.
+    /// Key direction: key[0] = server encrypt (server→client), key[1] = client encrypt (client→server).
+    ///
+    /// Key block layout (88 bytes minimum):
+    /// - bytes 0..32:  key[0].cipher = server encrypt key
+    /// - bytes 32..44: key[0].iv    = server encrypt implicit IV (12 bytes)
+    /// - bytes 44..76: key[1].cipher = client encrypt key
+    /// - bytes 76..88: key[1].iv    = client encrypt implicit IV (12 bytes)
     ///
     /// The implicit IVs are XORed with the per-packet counter to form the AEAD nonce.
     pub fn from_openvpn_aead_key_block(block: &[u8]) -> Self {
@@ -115,10 +118,12 @@ impl KeyMaterial {
             client_implicit_iv: [0u8; 12],
             server_implicit_iv: [0u8; 12],
         };
-        material.client_write_key.copy_from_slice(&block[0..32]);
-        material.client_implicit_iv.copy_from_slice(&block[32..44]);
-        material.server_write_key.copy_from_slice(&block[44..76]);
-        material.server_implicit_iv.copy_from_slice(&block[76..88]);
+        // key[0] = server encrypt direction (server→client)
+        material.server_write_key.copy_from_slice(&block[0..32]);
+        material.server_implicit_iv.copy_from_slice(&block[32..44]);
+        // key[1] = client encrypt direction (client→server)
+        material.client_write_key.copy_from_slice(&block[44..76]);
+        material.client_implicit_iv.copy_from_slice(&block[76..88]);
         material
     }
 
