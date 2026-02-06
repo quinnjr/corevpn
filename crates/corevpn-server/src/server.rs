@@ -505,15 +505,18 @@ async fn handle_control_packet(
                             anyhow::anyhow!("TLS processing failed: {}", e)
                         })?;
 
-                    // If TLS handler wants to write, get the data
+                    // If TLS handler wants to write, get the data and split
+                    // into MTU-safe control channel packets
                     while tls.wants_write() {
                         if let Some(tls_out) = tls.get_outgoing()
                             .map_err(|e| anyhow::anyhow!("TLS outgoing failed: {}", e))?
                         {
-                            debug!("Sending {} bytes of TLS data to {}", tls_out.len(), peer_addr);
-                            // Wrap TLS data in control packet
-                            let ctrl_packet = conn.protocol.create_control_packet(tls_out)?;
-                            pending_packets.push(ctrl_packet);
+                            debug!("Sending {} bytes of TLS data to {} (splitting if needed)", tls_out.len(), peer_addr);
+                            // Wrap TLS data in control packets, splitting large
+                            // payloads to avoid IP fragmentation
+                            let ctrl_packets = conn.protocol.create_control_packets(tls_out)?;
+                            debug!("Split into {} control packet(s) for {}", ctrl_packets.len(), peer_addr);
+                            pending_packets.extend(ctrl_packets);
                         } else {
                             break;
                         }

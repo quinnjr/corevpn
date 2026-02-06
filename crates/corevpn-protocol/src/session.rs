@@ -344,8 +344,43 @@ impl ProtocolSession {
         Ok(self.maybe_wrap_tls_auth(serialized.freeze()))
     }
 
-    /// Create a control packet with TLS data
-    pub fn create_control_packet(&mut self, tls_data: Bytes) -> Result<Bytes> {
+    /// Maximum payload size for a single control channel packet.
+    /// OpenVPN splits TLS data across multiple control packets to stay within
+    /// the link MTU. We use 1100 bytes to leave room for:
+    /// - 1 byte opcode + 8 bytes session_id + 1 byte ack_count
+    /// - up to ~12 bytes ACKs + remote_session_id
+    /// - 4 bytes message_packet_id
+    /// - 20 bytes HMAC (if tls-auth)
+    /// - 8 bytes packet_id + timestamp (if tls-auth)
+    /// - 20 bytes IP header + 8 bytes UDP header
+    /// Total overhead ~82 bytes, so 1100 + 82 = 1182 < 1500 MTU
+    const MAX_CONTROL_PAYLOAD: usize = 1100;
+
+    /// Create control packets with TLS data, splitting across multiple
+    /// packets if the data exceeds the maximum control channel payload size.
+    /// This prevents oversized UDP datagrams that would require IP fragmentation.
+    pub fn create_control_packets(&mut self, tls_data: Bytes) -> Result<Vec<Bytes>> {
+        let mut packets = Vec::new();
+
+        if tls_data.len() <= Self::MAX_CONTROL_PAYLOAD {
+            // Data fits in a single packet
+            packets.push(self.create_single_control_packet(tls_data)?);
+        } else {
+            // Split data across multiple packets
+            let mut offset = 0;
+            while offset < tls_data.len() {
+                let end = std::cmp::min(offset + Self::MAX_CONTROL_PAYLOAD, tls_data.len());
+                let chunk = tls_data.slice(offset..end);
+                packets.push(self.create_single_control_packet(chunk)?);
+                offset = end;
+            }
+        }
+
+        Ok(packets)
+    }
+
+    /// Create a single control packet with TLS data (internal helper)
+    fn create_single_control_packet(&mut self, tls_data: Bytes) -> Result<Bytes> {
         let (packet_id, _) = self.reliable.send(tls_data.clone())?;
 
         let packet = crate::packet::ControlPacketData {
@@ -365,6 +400,11 @@ impl ProtocolSession {
 
         let serialized = Packet::Control(packet).serialize();
         Ok(self.maybe_wrap_tls_auth(serialized.freeze()))
+    }
+
+    /// Create a control packet with TLS data (convenience for single packet)
+    pub fn create_control_packet(&mut self, tls_data: Bytes) -> Result<Bytes> {
+        self.create_single_control_packet(tls_data)
     }
 
     /// Create an ACK packet
