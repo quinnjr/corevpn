@@ -140,12 +140,14 @@ impl KeyMaterial {
     /// - key[0] = server encrypt / client decrypt (server→client direction)
     /// - key[1] = client encrypt / server decrypt (client→server direction)
     ///
-    /// OpenVPN AEAD implicit IV (stored as 12 bytes, only first 8 used as nonce tail):
+    /// OpenVPN AEAD implicit IV (stored as 12 bytes, bytes 4..12 used as nonce tail):
     ///   implicit_iv = hmac_key[0..12]  (see key_ctx_update_implicit_iv in crypto.c)
     ///
     /// Nonce construction (see openvpn_encrypt_aead in crypto.c):
-    ///   nonce = [packet_id_be(4)] || [implicit_iv[0..8]]
-    ///   (concatenation, NOT XOR — the implicit_iv_len = iv_len(12) - pid_size(4) = 8)
+    ///   nonce = [packet_id_be(4)] || [implicit_iv[4..12]]
+    ///   OpenVPN's key_ctx_update_implicit_iv stores hmac_key[4..12] as its
+    ///   8-byte implicit IV. We store all 12 bytes (hmac[0..12]) and use
+    ///   bytes 4..12 when building the nonce, matching OpenVPN's behavior.
     pub fn from_openvpn_key2_block(block: &[u8]) -> Self {
         assert!(block.len() >= 256, "key2 block must be at least 256 bytes");
         let mut material = Self {

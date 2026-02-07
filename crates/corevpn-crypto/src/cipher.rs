@@ -56,7 +56,7 @@ impl CipherSuite {
 /// Data channel encryption key with secure memory handling
 pub struct DataChannelKey {
     key: [u8; 32],
-    /// Implicit IV for AEAD nonce construction (XORed with packet counter)
+    /// Implicit IV for AEAD nonce construction (12 bytes from hmac key; bytes 4..12 used as nonce tail)
     implicit_iv: [u8; 12],
     cipher_suite: CipherSuite,
 }
@@ -227,7 +227,7 @@ impl Cipher {
 ///
 /// Implements the OpenVPN AEAD data channel format:
 /// - 4-byte packet ID (big-endian counter)
-/// - Nonce = implicit_iv XOR padded(packet_id)
+/// - Nonce = [packet_id_be(4)] || [implicit_iv[4..12]]
 /// - On-wire: [packet_id(4)] [AEAD_tag(16)] [ciphertext]
 /// - AAD = packet_id bytes (4 bytes)
 ///
@@ -268,17 +268,20 @@ impl PacketCipher {
 
     /// Build a 12-byte AEAD nonce from implicit IV and packet ID.
     ///
-    /// OpenVPN non-epoch nonce construction (see openvpn_encrypt_aead in crypto.c):
-    ///   nonce = [packet_id_be(4)] || [implicit_iv_tail(8)]
+    /// OpenVPN 2.x AEAD nonce construction (see openvpn_encrypt_aead in crypto.c):
+    ///   nonce[0..4]  = packet_id (big-endian, 4 bytes)
+    ///   nonce[4..12] = implicit_iv[4..12] (tail 8 bytes of the 12-byte implicit IV)
     ///
-    /// Where implicit_iv_tail is the first 8 bytes of the HMAC key slot
-    /// (same as implicit_iv[0..8] since we store hmac[0..12] in implicit_iv).
-    /// The implicit IV length for nonce tail is: cipher_iv_length(12) - packet_id_size(4) = 8.
+    /// OpenVPN stores only 8 bytes of implicit IV (hmac_key[4..12] via
+    /// key_ctx_update_implicit_iv), but corevpn stores all 12 bytes of hmac[0..12].
+    /// We use implicit_iv[4..12] here to match OpenVPN's behavior: the first 4
+    /// bytes of the hmac key occupy the "packet ID slot" and are replaced, not
+    /// XOR'd, by the packet ID on each packet.
     #[inline(always)]
     fn build_nonce(&self, pid_bytes: &[u8; 4]) -> [u8; 12] {
         let mut nonce = [0u8; 12];
         nonce[0..4].copy_from_slice(pid_bytes);
-        nonce[4..12].copy_from_slice(&self.implicit_iv[0..8]);
+        nonce[4..12].copy_from_slice(&self.implicit_iv[4..12]);
         nonce
     }
 

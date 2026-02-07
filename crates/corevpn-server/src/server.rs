@@ -786,6 +786,13 @@ async fn handle_control_packet(
                                         //   key_block     = PRF(master_secret, "OpenVPN key expansion",
                                         //                       client_random2 || server_random2, 256)
                                         {
+                                            debug!("PRF inputs: pre_master[..8]={:02x?} client_r1[..8]={:02x?} server_r1[..8]={:02x?} client_r2[..8]={:02x?} server_r2[..8]={:02x?}",
+                                                &client_km.pre_master[..8],
+                                                &client_km.random1[..8],
+                                                &server_random1[..8],
+                                                &client_km.random2[..8],
+                                                &server_random2[..8]);
+
                                             // Step 1: derive master secret
                                             let mut seed1 = Vec::with_capacity(64);
                                             seed1.extend_from_slice(&client_km.random1);
@@ -796,6 +803,8 @@ async fn handle_control_packet(
                                                 &seed1,
                                                 48,
                                             ).map_err(|e| anyhow::anyhow!("PRF master secret failed: {}", e))?;
+
+                                            debug!("PRF master_secret[..8]={:02x?}", &master_secret[..8]);
 
                                             // Step 2: expand into key block (256 bytes = key2 struct)
                                             let mut seed2 = Vec::with_capacity(64);
@@ -809,8 +818,10 @@ async fn handle_control_packet(
                                             ).map_err(|e| anyhow::anyhow!("PRF key expansion failed: {}", e))?;
 
                                             let km = corevpn_crypto::KeyMaterial::from_openvpn_key2_block(&key_block);
-                                            debug!("PRF key[0].cipher[..8]={:02x?}, key[1].cipher[..8]={:02x?}",
-                                                &key_block[0..8], &key_block[128..136]);
+                                            debug!("PRF key[0].cipher[..8]={:02x?} key[0].hmac[..12]={:02x?}",
+                                                &key_block[0..8], &key_block[64..76]);
+                                            debug!("PRF key[1].cipher[..8]={:02x?} key[1].hmac[..12]={:02x?}",
+                                                &key_block[128..136], &key_block[192..204]);
 
                                             conn.protocol.install_keys(&km, true);
                                             info!("Installed PRF data channel keys for {}", peer_addr);
