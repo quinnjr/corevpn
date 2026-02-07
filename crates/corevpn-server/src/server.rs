@@ -435,7 +435,7 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
                     Ok((len, peer_addr)) => {
                         let packet_data = Bytes::copy_from_slice(&udp_buf[..len]);
                         if let Err(e) = handle_packet(&server, &socket, peer_addr, packet_data, &tun_write_tx).await {
-                            debug!("Packet handling error from {}: {}", peer_addr, e);
+                            warn!("Packet handling error from {}: {}", peer_addr, e);
                         }
                     }
                     Err(e) => {
