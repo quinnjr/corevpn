@@ -743,7 +743,7 @@ async fn handle_control_packet(
                                             random1: server_random1,
                                             random2: server_random2,
                                             options: format!(
-                                                "V4,dev-type tun,link-mtu 1560,tun-mtu 1500,proto UDPv4,cipher {},auth [null-digest],keysize 256,key-method 2,tls-server",
+                                                "V4,dev-type tun,link-mtu 1560,tun-mtu 1500,proto UDPv4,cipher {},auth [null-digest],keysize 256,key-method 2,tls-server,key-derivation tls-ekm",
                                                 negotiated_cipher
                                             ),
                                             username: None,
@@ -772,84 +772,29 @@ async fn handle_control_packet(
                                             }
                                         }
 
-                                        // Derive data channel keys
+                                        // Derive data channel keys using TLS Exported Keying Material (EKM).
                                         //
-                                        // With TLS 1.3 (used by rustls), OpenVPN 2.6+ uses TLS Exported
-                                        // Keying Material (EKM, RFC 5705) instead of the legacy OpenVPN PRF.
-                                        // The EKM approach directly exports 256 bytes from the TLS session
-                                        // into the key2 block.
+                                        // With TLS 1.3 (used by rustls), OpenVPN 2.6+ uses EKM (RFC 5705)
+                                        // instead of the legacy OpenVPN PRF. The server advertises this via
+                                        // "key-derivation tls-ekm" in the options string above.
                                         //
                                         // Label: "EXPORTER-OpenVPN-datakeys"
-                                        // Context: NONE (OpenVPN calls SSL_export_keying_material
-                                        //          with use_context=0, i.e. no context at all)
-                                        // Output: 256 bytes → key2 struct layout
+                                        // Context: None (OpenVPN uses use_context=0)
+                                        // Output: 256 bytes → key2 block layout
                                         {
-                                            // DIAGNOSTIC: Compute BOTH EKM and PRF keys, log both,
-                                            // and install PRF keys to test if client uses PRF.
-                                            
-                                            // 1) Compute EKM keys
                                             let mut ekm_key_block = vec![0u8; 256];
-                                            let ekm_ok = tls.export_keying_material(
+                                            tls.export_keying_material(
                                                 &mut ekm_key_block,
                                                 b"EXPORTER-OpenVPN-datakeys",
                                                 None,
-                                            ).is_ok();
-                                            
-                                            if ekm_ok {
-                                                let ekm_km = corevpn_crypto::KeyMaterial::from_openvpn_key2_block(&ekm_key_block);
-                                                info!("EKM key[0].cipher FULL={:02x?}", &ekm_key_block[0..32]);
-                                                info!("EKM key[0].hmac[..12]={:02x?}", &ekm_key_block[64..76]);
-                                                info!("EKM key[1].cipher FULL={:02x?}", &ekm_key_block[128..160]);
-                                                info!("EKM key[1].hmac[..12]={:02x?}", &ekm_key_block[192..204]);
-                                            } else {
-                                                warn!("EKM export failed for {}", peer_addr);
-                                            }
-                                            
-                                            // 2) ALWAYS compute PRF keys too (for comparison)
-                                            let mut master_seed = Vec::with_capacity(64);
-                                            master_seed.extend_from_slice(&client_km.random1);
-                                            master_seed.extend_from_slice(&server_random1);
+                                            ).map_err(|e| anyhow::anyhow!("EKM export failed: {}", e))?;
 
-                                            if let Ok(master) = corevpn_crypto::openvpn_prf(
-                                                &client_km.pre_master,
-                                                b"OpenVPN master secret",
-                                                &master_seed,
-                                                48,
-                                            ) {
-                                                let mut expansion_seed = Vec::with_capacity(80);
-                                                expansion_seed.extend_from_slice(&client_km.random2);
-                                                expansion_seed.extend_from_slice(&server_random2);
-                                                if let Some(remote_sid) = conn.protocol.remote_session_id() {
-                                                    expansion_seed.extend_from_slice(remote_sid);
-                                                }
-                                                expansion_seed.extend_from_slice(conn.protocol.local_session_id());
+                                            let ekm_km = corevpn_crypto::KeyMaterial::from_openvpn_key2_block(&ekm_key_block);
+                                            debug!("EKM key[0].cipher[..8]={:02x?}, key[1].cipher[..8]={:02x?}",
+                                                &ekm_key_block[0..8], &ekm_key_block[128..136]);
 
-                                                if let Ok(prf_key_block) = corevpn_crypto::openvpn_prf(
-                                                    &master,
-                                                    b"OpenVPN key expansion",
-                                                    &expansion_seed,
-                                                    256,
-                                                ) {
-                                                    let prf_km = corevpn_crypto::KeyMaterial::from_openvpn_key2_block(&prf_key_block);
-                                                    info!("PRF key[1].cipher FULL={:02x?}", &prf_key_block[128..160]);
-                                                    info!("PRF key[1].hmac[..12]={:02x?}", &prf_key_block[192..204]);
-                                                    info!("PRF key[0].cipher FULL={:02x?}", &prf_key_block[0..32]);
-                                                    info!("PRF key[0].hmac[..12]={:02x?}", &prf_key_block[64..76]);
-                                                    
-                                                    // INSTALL PRF KEYS with SWAPPED direction (test hypothesis: key direction is inverted)
-                                                    // is_server=false → encrypt=key[1], decrypt=key[0]
-                                                    // So server will decrypt incoming data with key[0] instead of key[1]
-                                                    conn.protocol.install_keys(&prf_km, false);
-                                                    info!("INSTALLED PRF KEYS (SWAPPED direction) for {} (decrypt with key[0])", peer_addr);
-                                                }
-                                            } else {
-                                                // PRF failed, fall back to EKM
-                                                if ekm_ok {
-                                                    let ekm_km = corevpn_crypto::KeyMaterial::from_openvpn_key2_block(&ekm_key_block);
-                                                    conn.protocol.install_keys(&ekm_km, true);
-                                                    info!("Installed EKM keys (PRF failed) for {}", peer_addr);
-                                                }
-                                            }
+                                            conn.protocol.install_keys(&ekm_km, true);
+                                            info!("Installed EKM data channel keys for {}", peer_addr);
                                         }
 
                                         // Allocate VPN IP and build push reply

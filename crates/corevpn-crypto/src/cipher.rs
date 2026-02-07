@@ -366,14 +366,6 @@ impl PacketCipher {
         let pid_bytes: [u8; 4] = packet[..4].try_into().unwrap();
         let counter = u32::from_be_bytes(pid_bytes) as u64;
 
-        // Log first few decrypt attempts for debugging
-        if counter <= 3 {
-            let hex: String = packet.iter().take(48).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
-            eprintln!("DECRYPT DEBUG: counter={}, packet_len={}, ad_prefix_len={}, iv={:02x?}, key_prefix={:02x?}", counter, packet.len(), ad_prefix.len(), &self.implicit_iv, &self.debug_key_prefix);
-            eprintln!("DECRYPT DEBUG: packet[..48]={}", hex);
-            eprintln!("DECRYPT DEBUG: ad_prefix={:02x?}, pid={:02x?}", ad_prefix, pid_bytes);
-        }
-
         // Check replay
         if !self.rx_window.check_and_update(counter) {
             return Err(CryptoError::ReplayDetected);
@@ -386,10 +378,6 @@ impl PacketCipher {
         aad.extend_from_slice(ad_prefix);
         aad.extend_from_slice(&pid_bytes);
 
-        if counter <= 3 {
-            eprintln!("DECRYPT DEBUG: nonce={:02x?}, aad={:02x?}", nonce, aad);
-        }
-
         // For tag-before (OpenVPN non-epoch): [pid(4)] [tag(16)] [ciphertext]
         let tag = &packet[PACKET_ID_SIZE..PACKET_ID_SIZE + CipherSuite::TAG_SIZE];
         let ct = &packet[PACKET_ID_SIZE + CipherSuite::TAG_SIZE..];
@@ -400,46 +388,7 @@ impl PacketCipher {
         // For tag-at-end (epoch format): [pid(4)] [ciphertext] [tag(16)]
         let ct_tag_end = &packet[PACKET_ID_SIZE..];
 
-        // Try multiple AAD formats to find the correct one (debug)
-        if counter <= 3 {
-            // AAD format 1: [pid(4)] only (current)
-            let aad1 = pid_bytes.to_vec();
-            // AAD format 2: [pid(4)] [16 zeros] (OpenVPN encrypt-side work buffer with zeroed tag)
-            let mut aad2 = pid_bytes.to_vec();
-            aad2.extend_from_slice(&[0u8; 16]);
-            // AAD format 3: [pid(4)] [actual_tag(16)]
-            let mut aad3 = pid_bytes.to_vec();
-            aad3.extend_from_slice(tag);
-            // AAD format 4: empty
-            let aad4: Vec<u8> = vec![];
-            // AAD format 5: just pid without ad_prefix (same as 1 for V1)
-            // AAD format 6: [opcode_byte(0x30)][pid(4)]
-            let mut aad6 = vec![0x30u8];
-            aad6.extend_from_slice(&pid_bytes);
-
-            let formats: &[(&str, &[u8])] = &[
-                ("pid_only", &aad1),
-                ("pid+zeros16", &aad2),
-                ("pid+tag", &aad3),
-                ("empty", &aad4),
-                ("opcode+pid", &aad6),
-            ];
-
-            for (name, test_aad) in formats {
-                // Try tag-before
-                if let Ok(_) = self.cipher.decrypt(&nonce, &ct_tag_reordered, test_aad) {
-                    eprintln!("DECRYPT SUCCESS: format=tag-before, aad_type={}, aad_len={}", name, test_aad.len());
-                    // Can't return here since we already consumed the replay window entry
-                    // Just log and continue to the normal path
-                }
-                // Try tag-at-end
-                if let Ok(_) = self.cipher.decrypt(&nonce, ct_tag_end, test_aad) {
-                    eprintln!("DECRYPT SUCCESS: format=tag-at-end, aad_type={}, aad_len={}", name, test_aad.len());
-                }
-            }
-        }
-
-        // Normal decrypt path: try tag-at-end first, then tag-before
+        // Try tag-at-end first (OpenVPN 2.6+ default), then tag-before (legacy)
         if let Ok(plaintext) = self.cipher.decrypt(&nonce, ct_tag_end, &aad) {
             return Ok(plaintext);
         }
