@@ -743,7 +743,7 @@ async fn handle_control_packet(
                                             random1: server_random1,
                                             random2: server_random2,
                                             options: format!(
-                                                "V4,dev-type tun,link-mtu 1560,tun-mtu 1500,proto UDPv4,cipher {},auth [null-digest],keysize 256,key-method 2,tls-server,key-derivation tls-ekm",
+                                                "V4,dev-type tun,link-mtu 1560,tun-mtu 1500,proto UDPv4,cipher {},auth [null-digest],keysize 256,key-method 2,tls-server",
                                                 negotiated_cipher
                                             ),
                                             username: None,
@@ -844,6 +844,9 @@ async fn handle_control_packet(
 
                                                 // Push negotiated cipher for NCP
                                                 push_reply.options.push(format!("cipher {}", negotiated_cipher));
+
+                                                // Push key-derivation method so client uses EKM (TLS 1.3)
+                                                push_reply.options.push("key-derivation tls-ekm".to_string());
 
                                                 let reply_str = push_reply.encode();
 
