@@ -202,6 +202,11 @@ impl ProtocolSession {
         self.tls_auth_key = Some(key);
     }
 
+    /// Update the cipher suite (e.g., after NCP cipher negotiation)
+    pub fn set_cipher_suite(&mut self, cipher_suite: CipherSuite) {
+        self.cipher_suite = cipher_suite;
+    }
+
     /// Process incoming packet
     pub fn process_packet(&mut self, data: &[u8]) -> Result<ProcessedPacket> {
         self.last_activity = Instant::now();

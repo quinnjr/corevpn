@@ -668,6 +668,14 @@ async fn handle_control_packet(
                                         };
                                         debug!("Negotiated cipher: {} for {}", negotiated_cipher, peer_addr);
 
+                                        // Update the session's cipher suite to match the negotiated cipher
+                                        let negotiated_suite = if negotiated_cipher.contains("CHACHA") {
+                                            CipherSuite::ChaCha20Poly1305
+                                        } else {
+                                            CipherSuite::Aes256Gcm
+                                        };
+                                        conn.protocol.set_cipher_suite(negotiated_suite);
+
                                         // Generate server's key_method_v2
                                         // Note: server does NOT send pre_master (encode(true) skips it).
                                         // Only random1 and random2 are sent and used.
