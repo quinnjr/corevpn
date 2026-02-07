@@ -158,6 +158,16 @@ impl TlsHandler {
     pub fn cipher_suite(&self) -> Option<&'static str> {
         self.conn.negotiated_cipher_suite().map(|cs| cs.suite().as_str().unwrap_or("unknown"))
     }
+
+    /// Get negotiated TLS protocol version
+    pub fn protocol_version(&self) -> Option<&'static str> {
+        self.conn.protocol_version().map(|v| match v {
+            rustls::ProtocolVersion::TLSv1_0 => "TLS 1.0",
+            rustls::ProtocolVersion::TLSv1_2 => "TLS 1.2",
+            rustls::ProtocolVersion::TLSv1_3 => "TLS 1.3",
+            _ => "unknown",
+        })
+    }
 }
 
 /// Helper to write to BytesMut

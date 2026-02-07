@@ -677,7 +677,9 @@ async fn handle_control_packet(
 
                     // Check if handshake is complete
                     if tls.is_handshake_complete() && conn.protocol.state() == ProtocolState::TlsHandshake {
-                        info!("TLS handshake complete with {}", peer_addr);
+                        let tls_ver = tls.protocol_version().unwrap_or("unknown");
+                        let tls_cs = tls.cipher_suite().unwrap_or("unknown");
+                        info!("TLS handshake complete with {} (version={}, cipher={})", peer_addr, tls_ver, tls_cs);
                         conn.protocol.set_state(ProtocolState::KeyExchange);
                         conn.auth_method = AuthMethod::Certificate;
 
@@ -795,8 +797,10 @@ async fn handle_control_packet(
                                             
                                             if ekm_ok {
                                                 let ekm_km = corevpn_crypto::KeyMaterial::from_openvpn_key2_block(&ekm_key_block);
-                                                info!("EKM key[1].cipher[..8]={:02x?}, key[1].hmac[..8]={:02x?}",
-                                                    &ekm_key_block[128..136], &ekm_key_block[192..200]);
+                                                info!("EKM key[0].cipher FULL={:02x?}", &ekm_key_block[0..32]);
+                                                info!("EKM key[0].hmac[..12]={:02x?}", &ekm_key_block[64..76]);
+                                                info!("EKM key[1].cipher FULL={:02x?}", &ekm_key_block[128..160]);
+                                                info!("EKM key[1].hmac[..12]={:02x?}", &ekm_key_block[192..204]);
                                             } else {
                                                 warn!("EKM export failed for {}", peer_addr);
                                             }
@@ -827,12 +831,16 @@ async fn handle_control_packet(
                                                     256,
                                                 ) {
                                                     let prf_km = corevpn_crypto::KeyMaterial::from_openvpn_key2_block(&prf_key_block);
-                                                    info!("PRF key[1].cipher[..8]={:02x?}, key[1].hmac[..8]={:02x?}",
-                                                        &prf_key_block[128..136], &prf_key_block[192..200]);
+                                                    info!("PRF key[1].cipher FULL={:02x?}", &prf_key_block[128..160]);
+                                                    info!("PRF key[1].hmac[..12]={:02x?}", &prf_key_block[192..204]);
+                                                    info!("PRF key[0].cipher FULL={:02x?}", &prf_key_block[0..32]);
+                                                    info!("PRF key[0].hmac[..12]={:02x?}", &prf_key_block[64..76]);
                                                     
-                                                    // INSTALL PRF KEYS (test hypothesis: client uses PRF)
-                                                    conn.protocol.install_keys(&prf_km, true);
-                                                    info!("INSTALLED PRF KEYS for {} (testing EKM vs PRF)", peer_addr);
+                                                    // INSTALL PRF KEYS with SWAPPED direction (test hypothesis: key direction is inverted)
+                                                    // is_server=false → encrypt=key[1], decrypt=key[0]
+                                                    // So server will decrypt incoming data with key[0] instead of key[1]
+                                                    conn.protocol.install_keys(&prf_km, false);
+                                                    info!("INSTALLED PRF KEYS (SWAPPED direction) for {} (decrypt with key[0])", peer_addr);
                                                 }
                                             } else {
                                                 // PRF failed, fall back to EKM
