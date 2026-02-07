@@ -1059,6 +1059,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tun",
+ "urlencoding",
  "uuid",
 ]
 

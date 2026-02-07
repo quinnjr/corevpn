@@ -58,6 +58,12 @@ struct Connection {
     stats: TransferStats,
     /// Cached hard reset response for retransmission on UDP retries
     hard_reset_response: Option<Bytes>,
+    /// Pending PUSH_REPLY string (waiting for OAuth authentication)
+    pending_push_reply: Option<String>,
+    /// OAuth state token for this connection
+    oauth_state: Option<String>,
+    /// Negotiated cipher name (stored for deferred PUSH_REPLY)
+    negotiated_cipher: Option<String>,
 }
 
 impl Connection {
@@ -74,6 +80,9 @@ impl Connection {
             auth_method: AuthMethod::Unknown,
             stats: TransferStats::default(),
             hard_reset_response: None,
+            pending_push_reply: None,
+            oauth_state: None,
+            negotiated_cipher: None,
         }
     }
 
@@ -103,6 +112,23 @@ impl Connection {
 /// Connection map type
 type ConnectionMap = Arc<RwLock<HashMap<SocketAddr, Connection>>>;
 
+/// OAuth authentication completion message
+pub struct AuthCompleted {
+    /// OAuth state token
+    pub state: String,
+    /// Authenticated user email
+    pub email: String,
+}
+
+/// Pending OAuth auth info (shared between HTTP server and VPN)
+pub struct PendingOAuth {
+    pub peer_addr: SocketAddr,
+    pub created_at: Instant,
+}
+
+/// Shared OAuth state between HTTP handler and VPN server
+pub type PendingOAuthMap = Arc<RwLock<HashMap<String, PendingOAuth>>>;
+
 /// Server state
 pub struct VpnServer {
     config: ServerConfig,
@@ -116,6 +142,8 @@ pub struct VpnServer {
     connection_logger: Arc<dyn ConnectionLogger>,
     /// Event anonymizer (if configured)
     anonymizer: Option<parking_lot::Mutex<Anonymizer>>,
+    /// Pending OAuth authentications (state_token → peer info)
+    pending_oauths: PendingOAuthMap,
 }
 
 impl VpnServer {
@@ -184,6 +212,7 @@ impl VpnServer {
             tls_auth_key,
             connection_logger,
             anonymizer,
+            pending_oauths: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -374,6 +403,25 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         }
     });
 
+    // Channel for OAuth auth completion notifications
+    let (auth_completed_tx, mut auth_completed_rx) = tokio::sync::mpsc::channel::<AuthCompleted>(32);
+
+    // Start OAuth HTTP server if OAuth is enabled
+    let oauth_enabled = config.oauth.as_ref().map(|o| o.enabled).unwrap_or(false);
+    if oauth_enabled {
+        let oauth_config = config.oauth.clone().unwrap();
+        let pending_oauths = server.pending_oauths.clone();
+        let auth_tx = auth_completed_tx.clone();
+        let public_host = config.server.public_host.clone();
+
+        tokio::spawn(async move {
+            if let Err(e) = run_oauth_server(oauth_config, pending_oauths, auth_tx, public_host).await {
+                error!("OAuth HTTP server error: {}", e);
+            }
+        });
+        info!("OAuth HTTP server started on port 9000");
+    }
+
     // Main event loop: multiplex UDP recv, TUN read, and keepalive timer
     let mut udp_buf = vec![0u8; 65535];
     let mut tun_buf = vec![0u8; 65535];
@@ -416,6 +464,12 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
             // Send keepalive pings to established connections
             _ = ping_interval.tick() => {
                 send_keepalive_pings(&server, &socket).await;
+            }
+            // Handle OAuth authentication completions
+            Some(auth) = auth_completed_rx.recv() => {
+                if let Err(e) = handle_auth_completed(&server, &socket, auth).await {
+                    warn!("Failed to handle OAuth completion: {}", e);
+                }
             }
         }
     }
@@ -828,29 +882,79 @@ async fn handle_control_packet(
                                                 // Push negotiated cipher for NCP
                                                 push_reply.options.push(format!("cipher {}", negotiated_cipher));
 
-                                                // Send PUSH_REPLY through TLS
                                                 let reply_str = push_reply.encode();
-                                                debug!("Sending PUSH_REPLY to {}: {}", peer_addr, reply_str);
-                                                let reply_bytes = format!("{}\0", reply_str);
-                                                if let Err(e) = tls.write_plaintext(reply_bytes.as_bytes()) {
-                                                    warn!("Failed to send PUSH_REPLY to {}: {}", peer_addr, e);
-                                                }
 
-                                                // Flush TLS outgoing data for push reply
-                                                while tls.wants_write() {
-                                                    if let Some(tls_out) = tls.get_outgoing()
-                                                        .map_err(|e| anyhow::anyhow!("TLS outgoing failed: {}", e))?
+                                                // Check if OAuth is enabled - defer PUSH_REPLY until auth completes
+                                                let oauth_enabled = server.config.oauth.as_ref()
+                                                    .map(|o| o.enabled).unwrap_or(false);
+
+                                                if oauth_enabled {
+                                                    // Generate OAuth state token
+                                                    let state_token = format!("{:x}", rand::random::<u64>());
+
+                                                    // Store pending push reply and state
+                                                    conn.pending_push_reply = Some(reply_str.clone());
+                                                    conn.oauth_state = Some(state_token.clone());
+                                                    conn.negotiated_cipher = Some(negotiated_cipher.clone());
+
+                                                    // Register in shared pending_oauths map
                                                     {
-                                                        debug!("Sending {} bytes of push reply TLS data to {}", tls_out.len(), peer_addr);
-                                                        let ctrl_packets = conn.protocol.create_control_packets(tls_out)?;
-                                                        pending_packets.extend(ctrl_packets);
-                                                    } else {
-                                                        break;
+                                                        let mut pending = server.pending_oauths.write();
+                                                        pending.insert(state_token.clone(), PendingOAuth {
+                                                            peer_addr,
+                                                            created_at: Instant::now(),
+                                                        });
                                                     }
-                                                }
 
-                                                conn.protocol.set_state(ProtocolState::Established);
-                                                info!("VPN session established with {} (IP: {})", peer_addr, client_ip);
+                                                    // Build OAuth URL
+                                                    let public_host = &server.config.server.public_host;
+                                                    let oauth_port = 9000; // OAuth HTTP server port
+                                                    let auth_url = format!("http://{}:{}/auth/start?state={}", public_host, oauth_port, state_token);
+
+                                                    // Send AUTH_PENDING with OPEN_URL
+                                                    let auth_pending = format!("AUTH_PENDING,timeout 120,OPEN_URL:{}\0", auth_url);
+                                                    debug!("Sending AUTH_PENDING to {}: {}", peer_addr, auth_pending.trim_end_matches('\0'));
+                                                    if let Err(e) = tls.write_plaintext(auth_pending.as_bytes()) {
+                                                        warn!("Failed to send AUTH_PENDING to {}: {}", peer_addr, e);
+                                                    }
+
+                                                    // Flush TLS outgoing data for AUTH_PENDING
+                                                    while tls.wants_write() {
+                                                        if let Some(tls_out) = tls.get_outgoing()
+                                                            .map_err(|e| anyhow::anyhow!("TLS outgoing failed: {}", e))?
+                                                        {
+                                                            let ctrl_packets = conn.protocol.create_control_packets(tls_out)?;
+                                                            pending_packets.extend(ctrl_packets);
+                                                        } else {
+                                                            break;
+                                                        }
+                                                    }
+
+                                                    info!("Waiting for OAuth authentication from {} (state: {})", peer_addr, state_token);
+                                                } else {
+                                                    // No OAuth - send PUSH_REPLY immediately
+                                                    debug!("Sending PUSH_REPLY to {}: {}", peer_addr, reply_str);
+                                                    let reply_bytes = format!("{}\0", reply_str);
+                                                    if let Err(e) = tls.write_plaintext(reply_bytes.as_bytes()) {
+                                                        warn!("Failed to send PUSH_REPLY to {}: {}", peer_addr, e);
+                                                    }
+
+                                                    // Flush TLS outgoing data for push reply
+                                                    while tls.wants_write() {
+                                                        if let Some(tls_out) = tls.get_outgoing()
+                                                            .map_err(|e| anyhow::anyhow!("TLS outgoing failed: {}", e))?
+                                                        {
+                                                            debug!("Sending {} bytes of push reply TLS data to {}", tls_out.len(), peer_addr);
+                                                            let ctrl_packets = conn.protocol.create_control_packets(tls_out)?;
+                                                            pending_packets.extend(ctrl_packets);
+                                                        } else {
+                                                            break;
+                                                        }
+                                                    }
+
+                                                    conn.protocol.set_state(ProtocolState::Established);
+                                                    info!("VPN session established with {} (IP: {})", peer_addr, client_ip);
+                                                }
                                             }
                                             Err(e) => {
                                                 warn!("Failed to allocate VPN IP for {}: {}", peer_addr, e);
@@ -1221,4 +1325,316 @@ fn drop_privileges() -> Result<()> {
     }
 
     Ok(())
+}
+
+// ============================================================================
+// OAuth HTTP Server
+// ============================================================================
+
+/// State shared between OAuth HTTP routes
+#[derive(Clone)]
+struct OAuthState {
+    config: corevpn_config::server::OAuthSettings,
+    pending_oauths: PendingOAuthMap,
+    auth_completed_tx: tokio::sync::mpsc::Sender<AuthCompleted>,
+    public_host: String,
+}
+
+/// Handle OAuth authentication completion - send deferred PUSH_REPLY
+async fn handle_auth_completed(
+    server: &VpnServer,
+    socket: &UdpSocket,
+    auth: AuthCompleted,
+) -> Result<()> {
+    let mut connections = server.connections.write();
+
+    // Find connection by OAuth state token
+    let peer_addr = {
+        let pending = server.pending_oauths.read();
+        pending.get(&auth.state).map(|p| p.peer_addr)
+    };
+
+    let peer_addr = match peer_addr {
+        Some(addr) => addr,
+        None => {
+            warn!("OAuth completed but no pending auth found for state: {}", auth.state);
+            return Ok(());
+        }
+    };
+
+    // Remove from pending
+    {
+        let mut pending = server.pending_oauths.write();
+        pending.remove(&auth.state);
+    }
+
+    let conn = match connections.get_mut(&peer_addr) {
+        Some(c) => c,
+        None => {
+            warn!("OAuth completed but connection gone for {}", peer_addr);
+            return Ok(());
+        }
+    };
+
+    let push_reply_str = match conn.pending_push_reply.take() {
+        Some(s) => s,
+        None => {
+            warn!("OAuth completed but no pending push reply for {}", peer_addr);
+            return Ok(());
+        }
+    };
+
+    // Set authenticated user
+    conn.username = Some(auth.email.clone());
+    conn.auth_method = AuthMethod::OAuth2;
+
+    // Send PUSH_REPLY through TLS
+    let tls = match conn.tls.as_mut() {
+        Some(t) => t,
+        None => {
+            warn!("OAuth completed but no TLS handler for {}", peer_addr);
+            return Ok(());
+        }
+    };
+
+    debug!("Sending deferred PUSH_REPLY to {} (user: {}): {}", peer_addr, auth.email, push_reply_str);
+    let reply_bytes = format!("{}\0", push_reply_str);
+    if let Err(e) = tls.write_plaintext(reply_bytes.as_bytes()) {
+        warn!("Failed to send PUSH_REPLY to {}: {}", peer_addr, e);
+        return Ok(());
+    }
+
+    // Flush TLS outgoing data
+    let mut packets = Vec::new();
+    while tls.wants_write() {
+        if let Some(tls_out) = tls.get_outgoing()
+            .map_err(|e| anyhow::anyhow!("TLS outgoing failed: {}", e))?
+        {
+            let ctrl_packets = conn.protocol.create_control_packets(tls_out)?;
+            packets.extend(ctrl_packets);
+        } else {
+            break;
+        }
+    }
+
+    conn.protocol.set_state(ProtocolState::Established);
+    let client_ip = conn.vpn_ip.map(|ip| ip.to_string()).unwrap_or_default();
+    info!("VPN session established with {} (user: {}, IP: {})", peer_addr, auth.email, client_ip);
+
+    // Release lock before sending UDP
+    drop(connections);
+
+    // Send all control packets
+    for packet in packets {
+        socket.send_to(&packet, peer_addr).await?;
+    }
+
+    Ok(())
+}
+
+/// Run the OAuth HTTP server for handling SSO callbacks
+async fn run_oauth_server(
+    oauth_config: corevpn_config::server::OAuthSettings,
+    pending_oauths: PendingOAuthMap,
+    auth_completed_tx: tokio::sync::mpsc::Sender<AuthCompleted>,
+    public_host: String,
+) -> Result<()> {
+    use axum::{Router, routing::get};
+
+    let state = OAuthState {
+        config: oauth_config,
+        pending_oauths,
+        auth_completed_tx,
+        public_host,
+    };
+
+    let app = Router::new()
+        .route("/auth/start", get(oauth_start))
+        .route("/oauth/callback", get(oauth_callback))
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:9000").await?;
+    info!("OAuth HTTP server listening on 0.0.0.0:9000");
+
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
+struct OAuthStartQuery {
+    state: String,
+}
+
+/// OAuth start handler - redirect to Google OAuth
+async fn oauth_start(
+    axum::extract::State(state): axum::extract::State<OAuthState>,
+    axum::extract::Query(query): axum::extract::Query<OAuthStartQuery>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    use axum::http::StatusCode;
+
+    // Verify state token exists in pending auths
+    {
+        let pending = state.pending_oauths.read();
+        if !pending.contains_key(&query.state) {
+            return (StatusCode::BAD_REQUEST, "Invalid or expired authentication state").into_response();
+        }
+    }
+
+    // Build Google OAuth URL
+    let redirect_uri = format!("http://{}:9000/oauth/callback", state.public_host);
+
+    let auth_url = format!(
+        "https://accounts.google.com/o/oauth2/v2/auth?\
+         client_id={}&\
+         redirect_uri={}&\
+         response_type=code&\
+         scope=openid%20email%20profile&\
+         state={}&\
+         access_type=online&\
+         prompt=consent",
+        urlencoding::encode(&state.config.client_id),
+        urlencoding::encode(&redirect_uri),
+        urlencoding::encode(&query.state),
+    );
+
+    axum::response::Redirect::temporary(&auth_url).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct OAuthCallbackQuery {
+    code: String,
+    state: String,
+}
+
+/// OAuth callback handler - exchange code for token and complete auth
+async fn oauth_callback(
+    axum::extract::State(state): axum::extract::State<OAuthState>,
+    axum::extract::Query(query): axum::extract::Query<OAuthCallbackQuery>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    use axum::http::StatusCode;
+    use secrecy::ExposeSecret;
+
+    // Verify state token
+    {
+        let pending = state.pending_oauths.read();
+        if !pending.contains_key(&query.state) {
+            return (StatusCode::BAD_REQUEST, "Invalid or expired authentication state").into_response();
+        }
+    }
+
+    let redirect_uri = format!("http://{}:9000/oauth/callback", state.public_host);
+
+    // Exchange authorization code for tokens
+    let client = reqwest::Client::new();
+    let token_response = client.post("https://oauth2.googleapis.com/token")
+        .form(&[
+            ("code", query.code.as_str()),
+            ("client_id", state.config.client_id.as_str()),
+            ("client_secret", state.config.client_secret.expose_secret()),
+            ("redirect_uri", redirect_uri.as_str()),
+            ("grant_type", "authorization_code"),
+        ])
+        .send()
+        .await;
+
+    let token_response = match token_response {
+        Ok(r) => r,
+        Err(e) => {
+            error!("OAuth token exchange failed: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Authentication failed").into_response();
+        }
+    };
+
+    if !token_response.status().is_success() {
+        let body = token_response.text().await.unwrap_or_default();
+        error!("OAuth token exchange returned error: {}", body);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Authentication failed").into_response();
+    }
+
+    let token_data: serde_json::Value = match token_response.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Failed to parse OAuth token response: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Authentication failed").into_response();
+        }
+    };
+
+    // Get user info from the access token
+    let access_token = match token_data["access_token"].as_str() {
+        Some(t) => t,
+        None => {
+            error!("No access_token in OAuth response");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Authentication failed").into_response();
+        }
+    };
+
+    let userinfo_response = client.get("https://www.googleapis.com/oauth2/v3/userinfo")
+        .bearer_auth(access_token)
+        .send()
+        .await;
+
+    let userinfo: serde_json::Value = match userinfo_response {
+        Ok(r) if r.status().is_success() => {
+            match r.json().await {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("Failed to parse userinfo: {}", e);
+                    return (StatusCode::INTERNAL_SERVER_ERROR, "Authentication failed").into_response();
+                }
+            }
+        }
+        Ok(r) => {
+            error!("Userinfo request failed with status: {}", r.status());
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Authentication failed").into_response();
+        }
+        Err(e) => {
+            error!("Userinfo request failed: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Authentication failed").into_response();
+        }
+    };
+
+    let email = match userinfo["email"].as_str() {
+        Some(e) => e.to_string(),
+        None => {
+            error!("No email in userinfo response");
+            return (StatusCode::FORBIDDEN, "No email in profile").into_response();
+        }
+    };
+
+    // Check allowed domains
+    if !state.config.allowed_domains.is_empty() {
+        let email_domain = email.split('@').last().unwrap_or("");
+        if !state.config.allowed_domains.iter().any(|d| d == email_domain) {
+            warn!("OAuth: email {} not in allowed domains {:?}", email, state.config.allowed_domains);
+            return (StatusCode::FORBIDDEN, "Your email domain is not authorized for VPN access").into_response();
+        }
+    }
+
+    info!("OAuth authentication successful for: {}", email);
+
+    // Notify VPN server of auth completion
+    if let Err(e) = state.auth_completed_tx.send(AuthCompleted {
+        state: query.state,
+        email: email.clone(),
+    }).await {
+        error!("Failed to send auth completion: {}", e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Authentication failed").into_response();
+    }
+
+    // Return success page
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html><head><title>CoreVPN - Authenticated</title>
+<style>body{{font-family:system-ui;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#1a1a2e;color:#eee}}
+.card{{background:#16213e;border-radius:12px;padding:40px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.3)}}
+h1{{color:#4ecca3;margin-bottom:10px}}p{{color:#aaa}}</style></head>
+<body><div class="card"><h1>&#10004; Authenticated</h1><p>Welcome, <strong>{}</strong></p>
+<p>VPN connection is being established.<br>You can close this window.</p></div></body></html>"#,
+        email
+    );
+
+    axum::response::Html(html).into_response()
 }
