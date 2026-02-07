@@ -126,9 +126,9 @@ impl KeyMaterial {
     ///
     /// Layout (256 bytes):
     /// - bytes   0..64:   key[0].cipher (first 32 used as cipher key)
-    /// - bytes  64..128:  key[0].hmac   (first 8 used as implicit IV for AEAD)
+    /// - bytes  64..128:  key[0].hmac   (first 12 used as implicit IV for AEAD)
     /// - bytes 128..192:  key[1].cipher (first 32 used as cipher key)
-    /// - bytes 192..256:  key[1].hmac   (first 8 used as implicit IV for AEAD)
+    /// - bytes 192..256:  key[1].hmac   (first 12 used as implicit IV for AEAD)
     ///
     /// Key direction mapping (OpenVPN init_key_ctx_bi with KEY_DIRECTION):
     ///   encrypt = keys[(d+0)&1], decrypt = keys[(d+1)&1]
@@ -140,13 +140,13 @@ impl KeyMaterial {
     /// - key[0] = server encrypt / client decrypt (server→client direction)
     /// - key[1] = client encrypt / server decrypt (client→server direction)
     ///
-    /// OpenVPN non-epoch AEAD implicit IV layout (12 bytes):
-    ///   [0..4] = 0x00000000  (the packet-id is placed here in the nonce, NOT XORed)
-    ///   [4..12] = hmac[0..8] (XORed with zero padding in the nonce)
+    /// OpenVPN AEAD implicit IV (12 bytes):
+    ///   implicit_iv = hmac_key[0..12]  (see key_ctx_update_implicit_iv in crypto.c)
     ///
-    /// The nonce = [packet_id(4) || implicit_iv[4..12]] because OpenVPN XORs:
-    ///   iv[i] ^= implicit_iv[i], where iv starts as [pid(4), 0(8)].
-    /// Since implicit_iv[0..4] = 0, the first 4 bytes are just the raw packet_id.
+    /// Nonce construction (see openvpn_encrypt_aead in crypto.c):
+    ///   nonce = [packet_id_be(4) || zeros(8)] XOR implicit_iv[12]
+    ///         = [pid[0]^iv[0], pid[1]^iv[1], pid[2]^iv[2], pid[3]^iv[3],
+    ///            iv[4], iv[5], iv[6], iv[7], iv[8], iv[9], iv[10], iv[11]]
     pub fn from_openvpn_key2_block(block: &[u8]) -> Self {
         assert!(block.len() >= 256, "key2 block must be at least 256 bytes");
         let mut material = Self {
@@ -159,12 +159,11 @@ impl KeyMaterial {
         };
         // key[0] = server encrypt / client decrypt (server→client)
         material.server_write_key.copy_from_slice(&block[0..32]);
-        // OpenVPN non-epoch format: implicit_iv[0..4] = 0, implicit_iv[4..12] = hmac[0..8]
-        // (see key_ctx_update_implicit_iv in OpenVPN crypto.c)
-        material.server_implicit_iv[4..12].copy_from_slice(&block[64..72]);
+        // implicit_iv = hmac[0..12] (OpenVPN copies full 12 bytes from hmac key)
+        material.server_implicit_iv.copy_from_slice(&block[64..76]);
         // key[1] = client encrypt / server decrypt (client→server)
         material.client_write_key.copy_from_slice(&block[128..160]);
-        material.client_implicit_iv[4..12].copy_from_slice(&block[192..200]);
+        material.client_implicit_iv.copy_from_slice(&block[192..204]);
         material
     }
 
