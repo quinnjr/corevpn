@@ -378,6 +378,15 @@ impl PacketCipher {
         aad.extend_from_slice(ad_prefix);
         aad.extend_from_slice(&pid_bytes);
 
+        // Diagnostic logging for first 3 packets
+        if counter <= 3 {
+            eprintln!("[DECRYPT] packet_id={} key_prefix={:02x?} iv={:02x?}",
+                counter, &self.debug_key_prefix, &self.implicit_iv);
+            eprintln!("[DECRYPT]   nonce={:02x?} aad={:02x?}", &nonce, &aad);
+            eprintln!("[DECRYPT]   packet[..20]={:02x?} total_len={}",
+                &packet[..std::cmp::min(20, packet.len())], packet.len());
+        }
+
         // For tag-before (OpenVPN non-epoch): [pid(4)] [tag(16)] [ciphertext]
         let tag = &packet[PACKET_ID_SIZE..PACKET_ID_SIZE + CipherSuite::TAG_SIZE];
         let ct = &packet[PACKET_ID_SIZE + CipherSuite::TAG_SIZE..];
@@ -390,10 +399,26 @@ impl PacketCipher {
 
         // Try tag-at-end first (OpenVPN 2.6+ default), then tag-before (legacy)
         if let Ok(plaintext) = self.cipher.decrypt(&nonce, ct_tag_end, &aad) {
+            if counter <= 3 {
+                eprintln!("[DECRYPT]   SUCCESS (tag-at-end) plaintext_len={}", plaintext.len());
+            }
             return Ok(plaintext);
         }
 
-        self.cipher.decrypt(&nonce, &ct_tag_reordered, &aad)
+        match self.cipher.decrypt(&nonce, &ct_tag_reordered, &aad) {
+            Ok(plaintext) => {
+                if counter <= 3 {
+                    eprintln!("[DECRYPT]   SUCCESS (tag-before) plaintext_len={}", plaintext.len());
+                }
+                Ok(plaintext)
+            }
+            Err(e) => {
+                if counter <= 3 {
+                    eprintln!("[DECRYPT]   FAILED both formats");
+                }
+                Err(e)
+            }
+        }
     }
 
     /// Get current TX counter (for debugging/stats)
