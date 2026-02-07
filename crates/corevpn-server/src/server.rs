@@ -652,6 +652,7 @@ async fn handle_control_packet(
 
                 // Pass TLS records to TLS handler
                 if let Some(ref mut tls) = conn.tls {
+                    debug!("Feeding {} TLS record(s) to TLS handler for {}", records.len(), peer_addr);
                     tls.process_tls_records(records)
                         .map_err(|e| {
                             warn!("TLS processing failed for {}: {}", peer_addr, e);
