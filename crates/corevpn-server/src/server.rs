@@ -876,6 +876,15 @@ async fn handle_control_packet(
                                                     push_reply.route_gateway = Some(gateway_ip.clone());
                                                 }
 
+                                                // Add push_routes from config
+                                                for route_cidr in &server.config.network.push_routes {
+                                                    if let Some((network, netmask)) = cidr_to_netmask(route_cidr) {
+                                                        push_reply.routes.push(corevpn_protocol::PushRoute::new(&network, &netmask));
+                                                    } else {
+                                                        warn!("Invalid push_route CIDR: {}", route_cidr);
+                                                    }
+                                                }
+
                                                 push_reply.ping = 10;
                                                 push_reply.ping_restart = 60;
 
@@ -1217,6 +1226,32 @@ async fn send_keepalive_pings(
 }
 
 /// Detect the default network interface from the routing table
+/// Convert a CIDR notation (e.g., "10.2.0.0/16") to (network, netmask) pair
+fn cidr_to_netmask(cidr: &str) -> Option<(String, String)> {
+    let parts: Vec<&str> = cidr.split('/').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    let network = parts[0];
+    let prefix_len: u32 = parts[1].parse().ok()?;
+    if prefix_len > 32 {
+        return None;
+    }
+    let mask = if prefix_len == 0 {
+        0u32
+    } else {
+        !0u32 << (32 - prefix_len)
+    };
+    let netmask = format!(
+        "{}.{}.{}.{}",
+        (mask >> 24) & 0xFF,
+        (mask >> 16) & 0xFF,
+        (mask >> 8) & 0xFF,
+        mask & 0xFF
+    );
+    Some((network.to_string(), netmask))
+}
+
 fn get_default_interface() -> Option<String> {
     if let Ok(content) = std::fs::read_to_string("/proc/net/route") {
         for line in content.lines().skip(1) {

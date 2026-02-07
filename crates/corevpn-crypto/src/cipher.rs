@@ -258,14 +258,17 @@ impl PacketCipher {
 
     /// Build a 12-byte AEAD nonce from implicit IV and packet ID.
     ///
-    /// nonce = implicit_iv XOR [packet_id_be(4) || 00000000(8)]
+    /// OpenVPN non-epoch nonce construction (see openvpn_encrypt_aead in crypto.c):
+    ///   nonce = [packet_id_be(4)] || [implicit_iv_tail(8)]
+    ///
+    /// Where implicit_iv_tail is the first 8 bytes of the HMAC key slot
+    /// (same as implicit_iv[0..8] since we store hmac[0..12] in implicit_iv).
+    /// The implicit IV length for nonce tail is: cipher_iv_length(12) - packet_id_size(4) = 8.
     #[inline(always)]
     fn build_nonce(&self, pid_bytes: &[u8; 4]) -> [u8; 12] {
-        let mut nonce = self.implicit_iv;
-        nonce[0] ^= pid_bytes[0];
-        nonce[1] ^= pid_bytes[1];
-        nonce[2] ^= pid_bytes[2];
-        nonce[3] ^= pid_bytes[3];
+        let mut nonce = [0u8; 12];
+        nonce[0..4].copy_from_slice(pid_bytes);
+        nonce[4..12].copy_from_slice(&self.implicit_iv[0..8]);
         nonce
     }
 
