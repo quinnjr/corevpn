@@ -77,6 +77,11 @@ impl DataChannelKey {
         self.cipher_suite
     }
 
+    /// Get the raw key bytes (for debug logging)
+    pub fn key(&self) -> &[u8; 32] {
+        &self.key
+    }
+
     /// Get the implicit IV
     pub fn implicit_iv(&self) -> &[u8; 12] {
         &self.implicit_iv
@@ -232,12 +237,14 @@ impl Cipher {
 /// - Pre-allocates output buffers with known capacity
 pub struct PacketCipher {
     cipher: Cipher,
-    /// Implicit IV from key derivation, XORed with packet counter to form nonce
+    /// Implicit IV from key derivation (first 8 bytes used as nonce tail)
     implicit_iv: [u8; 12],
     /// Outgoing packet counter (32-bit, matching OpenVPN packet_id_type)
     tx_counter: u32,
     /// Replay protection window
     rx_window: ReplayWindow,
+    /// Debug: raw key bytes (first 8 only, for logging)
+    debug_key_prefix: [u8; 8],
 }
 
 /// Packet ID header size (4-byte counter, matching OpenVPN)
@@ -248,11 +255,14 @@ impl PacketCipher {
     #[inline]
     pub fn new(key: DataChannelKey) -> Self {
         let implicit_iv = *key.implicit_iv();
+        let mut debug_key_prefix = [0u8; 8];
+        debug_key_prefix.copy_from_slice(&key.key()[..8]);
         Self {
             cipher: key.cipher(),
             implicit_iv,
             tx_counter: 0,
             rx_window: ReplayWindow::new(),
+            debug_key_prefix,
         }
     }
 
@@ -359,7 +369,7 @@ impl PacketCipher {
         // Log first few decrypt attempts for debugging
         if counter <= 3 {
             let hex: String = packet.iter().take(48).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
-            eprintln!("DECRYPT DEBUG: counter={}, packet_len={}, ad_prefix_len={}, iv={:02x?}", counter, packet.len(), ad_prefix.len(), &self.implicit_iv);
+            eprintln!("DECRYPT DEBUG: counter={}, packet_len={}, ad_prefix_len={}, iv={:02x?}, key_prefix={:02x?}", counter, packet.len(), ad_prefix.len(), &self.implicit_iv, &self.debug_key_prefix);
             eprintln!("DECRYPT DEBUG: packet[..48]={}", hex);
             eprintln!("DECRYPT DEBUG: ad_prefix={:02x?}, pid={:02x?}", ad_prefix, pid_bytes);
         }
