@@ -353,6 +353,14 @@ impl PacketCipher {
         let pid_bytes: [u8; 4] = packet[..4].try_into().unwrap();
         let counter = u32::from_be_bytes(pid_bytes) as u64;
 
+        // Log first few decrypt attempts for debugging
+        if counter <= 3 {
+            let hex: String = packet.iter().take(48).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+            eprintln!("DECRYPT DEBUG: counter={}, packet_len={}, ad_prefix_len={}, iv={:02x?}", counter, packet.len(), ad_prefix.len(), &self.implicit_iv);
+            eprintln!("DECRYPT DEBUG: packet[..48]={}", hex);
+            eprintln!("DECRYPT DEBUG: ad_prefix={:02x?}, pid={:02x?}", ad_prefix, pid_bytes);
+        }
+
         // Check replay
         if !self.rx_window.check_and_update(counter) {
             return Err(CryptoError::ReplayDetected);
@@ -364,6 +372,10 @@ impl PacketCipher {
         let mut aad = Vec::with_capacity(ad_prefix.len() + PACKET_ID_SIZE);
         aad.extend_from_slice(ad_prefix);
         aad.extend_from_slice(&pid_bytes);
+
+        if counter <= 3 {
+            eprintln!("DECRYPT DEBUG: nonce={:02x?}, aad={:02x?}", nonce, aad);
+        }
 
         // Try tag-at-end first: [pid(4)] [ciphertext||tag]
         // The AEAD library expects ciphertext||tag, which is exactly packet[4..]

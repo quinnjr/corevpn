@@ -884,7 +884,7 @@ dependencies = [
 
 [[package]]
 name = "corevpn-auth"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "addr",
  "anyhow",
@@ -913,7 +913,7 @@ dependencies = [
 
 [[package]]
 name = "corevpn-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -935,7 +935,7 @@ dependencies = [
 
 [[package]]
 name = "corevpn-config"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "corevpn-core",
@@ -952,7 +952,7 @@ dependencies = [
 
 [[package]]
 name = "corevpn-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "corevpn-crypto"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -1000,7 +1000,7 @@ dependencies = [
 
 [[package]]
 name = "corevpn-protocol"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1020,7 +1020,7 @@ dependencies = [
 
 [[package]]
 name = "corevpn-server"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1065,7 +1065,7 @@ dependencies = [
 
 [[package]]
 name = "corevpn-ui"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",

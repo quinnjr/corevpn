@@ -648,7 +648,7 @@ async fn handle_control_packet(
 
         match result {
             ProcessedPacket::TlsData(records) => {
-                debug!("Received {} TLS record(s) from {}", records.len(), peer_addr);
+                info!("Received {} TLS record(s) from {} (total {} bytes)", records.len(), peer_addr, records.iter().map(|r| r.len()).sum::<usize>());
 
                 // Pass TLS records to TLS handler
                 if let Some(ref mut tls) = conn.tls {
@@ -797,12 +797,12 @@ async fn handle_control_packet(
                                                     //   key[0] = server encrypt / client decrypt (server→client)
                                                     //   key[1] = client encrypt / server decrypt (client→server)
                                                     let key_material = corevpn_crypto::KeyMaterial::from_openvpn_key2_block(&key_block);
-                                                    debug!("EKM key block (256 bytes): key[0].cipher[..8]={:02x?}, key[0].hmac[..12]={:02x?}, key[1].cipher[..8]={:02x?}, key[1].hmac[..12]={:02x?}",
+                                                    info!("EKM key block (256 bytes): key[0].cipher[..8]={:02x?}, key[0].hmac[..12]={:02x?}, key[1].cipher[..8]={:02x?}, key[1].hmac[..12]={:02x?}",
                                                         &key_block[0..8], &key_block[64..76], &key_block[128..136], &key_block[192..204]);
-                                                    debug!("Server encrypt key (key[0]): {:02x?}", &key_material.server_write_key[..8]);
-                                                    debug!("Server encrypt IV (key[0]): {:02x?}", &key_material.server_implicit_iv);
-                                                    debug!("Client encrypt key (key[1]): {:02x?}", &key_material.client_write_key[..8]);
-                                                    debug!("Client encrypt IV (key[1]): {:02x?}", &key_material.client_implicit_iv);
+                                                    info!("Server encrypt key (key[0]): {:02x?}", &key_material.server_write_key[..8]);
+                                                    info!("Server encrypt IV (key[0]): {:02x?}", &key_material.server_implicit_iv);
+                                                    info!("Client encrypt key (key[1]): {:02x?}", &key_material.client_write_key[..8]);
+                                                    info!("Client encrypt IV (key[1]): {:02x?}", &key_material.client_implicit_iv);
                                                     conn.protocol.install_keys(&key_material, true);
                                                     info!("Derived data channel keys via EKM for {} (TLS 1.3)", peer_addr);
                                                 }
@@ -1071,9 +1071,14 @@ async fn handle_data_packet(
         conn.add_bytes_rx(data.len() as u64);
 
         // Debug: hex dump first data packets
-        if conn.stats.packets_rx <= 3 {
+        if conn.stats.packets_rx <= 5 {
             let hex: String = data.iter().take(64).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
-            debug!("Data packet #{} from {} ({} bytes): {}{}", conn.stats.packets_rx, peer_addr, data.len(), hex, if data.len() > 64 { "..." } else { "" });
+            info!("Data packet #{} from {} ({} bytes): {}{}", conn.stats.packets_rx, peer_addr, data.len(), hex, if data.len() > 64 { "..." } else { "" });
+            // Log opcode parsing
+            if !data.is_empty() {
+                let opcode_byte = data[0];
+                info!("  opcode_byte=0x{:02x} (opcode={}, key_id={})", opcode_byte, opcode_byte >> 3, opcode_byte & 0x07);
+            }
         }
 
         // Process data packet (decrypt)
