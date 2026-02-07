@@ -1450,7 +1450,7 @@ async fn run_oauth_server(
 
     let app = Router::new()
         .route("/auth/start", get(oauth_start))
-        .route("/oauth/callback", get(oauth_callback))
+        .route("/auth/complete", axum::routing::post(oauth_complete))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:9000").await?;
@@ -1466,7 +1466,15 @@ struct OAuthStartQuery {
     state: String,
 }
 
+/// The localhost port that the VPN client's SSO service listens on for OAuth callbacks.
+const CLIENT_OAUTH_CALLBACK_PORT: u16 = 19823;
+
 /// OAuth start handler - redirect to Google OAuth
+///
+/// The redirect_uri points to localhost on the client machine. Google allows
+/// `http://localhost` redirect URIs (unlike non-localhost HTTP which is blocked).
+/// After Google authenticates the user, it redirects to the client's local server,
+/// which then POSTs the auth code to the VPN server's /auth/complete endpoint.
 async fn oauth_start(
     axum::extract::State(state): axum::extract::State<OAuthState>,
     axum::extract::Query(query): axum::extract::Query<OAuthStartQuery>,
@@ -1474,16 +1482,20 @@ async fn oauth_start(
     use axum::response::IntoResponse;
     use axum::http::StatusCode;
 
+    info!("OAuth /auth/start request received with state: {}", query.state);
+
     // Verify state token exists in pending auths
     {
         let pending = state.pending_oauths.read();
         if !pending.contains_key(&query.state) {
+            warn!("OAuth start: invalid state token: {}", query.state);
             return (StatusCode::BAD_REQUEST, "Invalid or expired authentication state").into_response();
         }
     }
 
-    // Build Google OAuth URL
-    let redirect_uri = format!("http://{}:9000/oauth/callback", state.public_host);
+    // The redirect goes to localhost on the client. The client's SSO service
+    // runs a temporary HTTP server on this port to catch the callback.
+    let redirect_uri = format!("http://localhost:{}/oauth/callback", CLIENT_OAUTH_CALLBACK_PORT);
 
     let auth_url = format!(
         "https://accounts.google.com/o/oauth2/v2/auth?\
@@ -1499,39 +1511,51 @@ async fn oauth_start(
         urlencoding::encode(&query.state),
     );
 
+    info!("OAuth start: redirecting to Google for state: {} (redirect to localhost:{})", query.state, CLIENT_OAUTH_CALLBACK_PORT);
     axum::response::Redirect::temporary(&auth_url).into_response()
 }
 
+/// Request body for the /auth/complete endpoint (POST from client's SSO service)
 #[derive(serde::Deserialize)]
-struct OAuthCallbackQuery {
+struct OAuthCompleteRequest {
     code: String,
     state: String,
 }
 
-/// OAuth callback handler - exchange code for token and complete auth
-async fn oauth_callback(
+/// OAuth complete handler - receives the auth code from the VPN client's SSO service.
+///
+/// Flow: Google redirected to localhost on the client -> the client's SSO service
+/// caught the callback and POSTs the code + state here -> we exchange code for token,
+/// verify the user, and complete the VPN authentication.
+async fn oauth_complete(
     axum::extract::State(state): axum::extract::State<OAuthState>,
-    axum::extract::Query(query): axum::extract::Query<OAuthCallbackQuery>,
+    axum::extract::Json(body): axum::extract::Json<OAuthCompleteRequest>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
     use axum::http::StatusCode;
     use secrecy::ExposeSecret;
 
+    info!("OAuth /auth/complete received for state: {}", body.state);
+
     // Verify state token
     {
         let pending = state.pending_oauths.read();
-        if !pending.contains_key(&query.state) {
-            return (StatusCode::BAD_REQUEST, "Invalid or expired authentication state").into_response();
+        if !pending.contains_key(&body.state) {
+            warn!("OAuth complete: invalid state token: {}", body.state);
+            return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({
+                "error": "Invalid or expired authentication state"
+            }))).into_response();
         }
     }
 
-    let redirect_uri = format!("http://{}:9000/oauth/callback", state.public_host);
+    // The redirect_uri must match exactly what was sent to Google in /auth/start
+    let redirect_uri = format!("http://localhost:{}/oauth/callback", CLIENT_OAUTH_CALLBACK_PORT);
 
     // Exchange authorization code for tokens
     let client = reqwest::Client::new();
     let token_response = client.post("https://oauth2.googleapis.com/token")
         .form(&[
-            ("code", query.code.as_str()),
+            ("code", body.code.as_str()),
             ("client_id", state.config.client_id.as_str()),
             ("client_secret", state.config.client_secret.expose_secret()),
             ("redirect_uri", redirect_uri.as_str()),
@@ -1544,21 +1568,27 @@ async fn oauth_callback(
         Ok(r) => r,
         Err(e) => {
             error!("OAuth token exchange failed: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Authentication failed").into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({
+                "error": "Token exchange failed"
+            }))).into_response();
         }
     };
 
     if !token_response.status().is_success() {
-        let body = token_response.text().await.unwrap_or_default();
-        error!("OAuth token exchange returned error: {}", body);
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Authentication failed").into_response();
+        let body_text = token_response.text().await.unwrap_or_default();
+        error!("OAuth token exchange returned error: {}", body_text);
+        return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({
+            "error": "Token exchange failed"
+        }))).into_response();
     }
 
     let token_data: serde_json::Value = match token_response.json().await {
         Ok(v) => v,
         Err(e) => {
             error!("Failed to parse OAuth token response: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Authentication failed").into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({
+                "error": "Token parse failed"
+            }))).into_response();
         }
     };
 
@@ -1567,7 +1597,9 @@ async fn oauth_callback(
         Some(t) => t,
         None => {
             error!("No access_token in OAuth response");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Authentication failed").into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({
+                "error": "No access token"
+            }))).into_response();
         }
     };
 
@@ -1582,17 +1614,23 @@ async fn oauth_callback(
                 Ok(v) => v,
                 Err(e) => {
                     error!("Failed to parse userinfo: {}", e);
-                    return (StatusCode::INTERNAL_SERVER_ERROR, "Authentication failed").into_response();
+                    return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({
+                        "error": "Userinfo parse failed"
+                    }))).into_response();
                 }
             }
         }
         Ok(r) => {
             error!("Userinfo request failed with status: {}", r.status());
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Authentication failed").into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({
+                "error": "Userinfo request failed"
+            }))).into_response();
         }
         Err(e) => {
             error!("Userinfo request failed: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Authentication failed").into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({
+                "error": "Userinfo request failed"
+            }))).into_response();
         }
     };
 
@@ -1600,7 +1638,9 @@ async fn oauth_callback(
         Some(e) => e.to_string(),
         None => {
             error!("No email in userinfo response");
-            return (StatusCode::FORBIDDEN, "No email in profile").into_response();
+            return (StatusCode::FORBIDDEN, axum::Json(serde_json::json!({
+                "error": "No email in profile"
+            }))).into_response();
         }
     };
 
@@ -1609,7 +1649,9 @@ async fn oauth_callback(
         let email_domain = email.split('@').last().unwrap_or("");
         if !state.config.allowed_domains.iter().any(|d| d == email_domain) {
             warn!("OAuth: email {} not in allowed domains {:?}", email, state.config.allowed_domains);
-            return (StatusCode::FORBIDDEN, "Your email domain is not authorized for VPN access").into_response();
+            return (StatusCode::FORBIDDEN, axum::Json(serde_json::json!({
+                "error": "Your email domain is not authorized for VPN access"
+            }))).into_response();
         }
     }
 
@@ -1617,24 +1659,18 @@ async fn oauth_callback(
 
     // Notify VPN server of auth completion
     if let Err(e) = state.auth_completed_tx.send(AuthCompleted {
-        state: query.state,
+        state: body.state,
         email: email.clone(),
     }).await {
         error!("Failed to send auth completion: {}", e);
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Authentication failed").into_response();
+        return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({
+            "error": "Internal error"
+        }))).into_response();
     }
 
-    // Return success page
-    let html = format!(
-        r#"<!DOCTYPE html>
-<html><head><title>CoreVPN - Authenticated</title>
-<style>body{{font-family:system-ui;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#1a1a2e;color:#eee}}
-.card{{background:#16213e;border-radius:12px;padding:40px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.3)}}
-h1{{color:#4ecca3;margin-bottom:10px}}p{{color:#aaa}}</style></head>
-<body><div class="card"><h1>&#10004; Authenticated</h1><p>Welcome, <strong>{}</strong></p>
-<p>VPN connection is being established.<br>You can close this window.</p></div></body></html>"#,
-        email
-    );
-
-    axum::response::Html(html).into_response()
+    // Return success to the client's SSO service
+    axum::Json(serde_json::json!({
+        "status": "ok",
+        "email": email,
+    })).into_response()
 }
