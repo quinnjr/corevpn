@@ -782,64 +782,64 @@ async fn handle_control_packet(
                                         //          with use_context=0, i.e. no context at all)
                                         // Output: 256 bytes → key2 struct layout
                                         {
-                                            let mut key_block = vec![0u8; 256];
-                                            match tls.export_keying_material(
-                                                &mut key_block,
+                                            // DIAGNOSTIC: Compute BOTH EKM and PRF keys, log both,
+                                            // and install PRF keys to test if client uses PRF.
+                                            
+                                            // 1) Compute EKM keys
+                                            let mut ekm_key_block = vec![0u8; 256];
+                                            let ekm_ok = tls.export_keying_material(
+                                                &mut ekm_key_block,
                                                 b"EXPORTER-OpenVPN-datakeys",
                                                 None,
+                                            ).is_ok();
+                                            
+                                            if ekm_ok {
+                                                let ekm_km = corevpn_crypto::KeyMaterial::from_openvpn_key2_block(&ekm_key_block);
+                                                info!("EKM key[1].cipher[..8]={:02x?}, key[1].hmac[..8]={:02x?}",
+                                                    &ekm_key_block[128..136], &ekm_key_block[192..200]);
+                                            } else {
+                                                warn!("EKM export failed for {}", peer_addr);
+                                            }
+                                            
+                                            // 2) ALWAYS compute PRF keys too (for comparison)
+                                            let mut master_seed = Vec::with_capacity(64);
+                                            master_seed.extend_from_slice(&client_km.random1);
+                                            master_seed.extend_from_slice(&server_random1);
+
+                                            if let Ok(master) = corevpn_crypto::openvpn_prf(
+                                                &client_km.pre_master,
+                                                b"OpenVPN master secret",
+                                                &master_seed,
+                                                48,
                                             ) {
-                                                Ok(()) => {
-                                                    // OpenVPN key2 struct layout (256 bytes):
-                                                    //   key[0].cipher[64] | key[0].hmac[64] | key[1].cipher[64] | key[1].hmac[64]
-                                                    // For AES-256-GCM AEAD:
-                                                    //   key[0].cipher[0..32] = cipher key, key[0].hmac[0..12] = implicit IV
-                                                    // Direction (with client keydir=1, server keydir=0):
-                                                    //   key[0] = server encrypt / client decrypt (server→client)
-                                                    //   key[1] = client encrypt / server decrypt (client→server)
-                                                    let key_material = corevpn_crypto::KeyMaterial::from_openvpn_key2_block(&key_block);
-                                                    info!("EKM key block (256 bytes): key[0].cipher[..8]={:02x?}, key[0].hmac[..12]={:02x?}, key[1].cipher[..8]={:02x?}, key[1].hmac[..12]={:02x?}",
-                                                        &key_block[0..8], &key_block[64..76], &key_block[128..136], &key_block[192..204]);
-                                                    info!("Server encrypt key FULL (key[0]): {:02x?}", &key_material.server_write_key);
-                                                    info!("Server encrypt IV (key[0]): {:02x?}", &key_material.server_implicit_iv);
-                                                    info!("Client encrypt key FULL (key[1]): {:02x?}", &key_material.client_write_key);
-                                                    info!("Client encrypt IV (key[1]): {:02x?}", &key_material.client_implicit_iv);
-                                                    info!("Negotiated cipher suite: {}", negotiated_cipher);
-                                                    conn.protocol.install_keys(&key_material, true);
-                                                    info!("Derived data channel keys via EKM for {} (TLS 1.3)", peer_addr);
+                                                let mut expansion_seed = Vec::with_capacity(80);
+                                                expansion_seed.extend_from_slice(&client_km.random2);
+                                                expansion_seed.extend_from_slice(&server_random2);
+                                                if let Some(remote_sid) = conn.protocol.remote_session_id() {
+                                                    expansion_seed.extend_from_slice(remote_sid);
                                                 }
-                                                Err(e) => {
-                                                    // EKM failed, fall back to legacy OpenVPN PRF
-                                                    warn!("EKM export failed for {}: {}, falling back to PRF", peer_addr, e);
+                                                expansion_seed.extend_from_slice(conn.protocol.local_session_id());
 
-                                                    let mut master_seed = Vec::with_capacity(64);
-                                                    master_seed.extend_from_slice(&client_km.random1);
-                                                    master_seed.extend_from_slice(&server_random1);
-
-                                                    if let Ok(master) = corevpn_crypto::openvpn_prf(
-                                                        &client_km.pre_master,
-                                                        b"OpenVPN master secret",
-                                                        &master_seed,
-                                                        48,
-                                                    ) {
-                                                        let mut expansion_seed = Vec::with_capacity(80);
-                                                        expansion_seed.extend_from_slice(&client_km.random2);
-                                                        expansion_seed.extend_from_slice(&server_random2);
-                                                        if let Some(remote_sid) = conn.protocol.remote_session_id() {
-                                                            expansion_seed.extend_from_slice(remote_sid);
-                                                        }
-                                                        expansion_seed.extend_from_slice(conn.protocol.local_session_id());
-
-                                                        if let Ok(key_block_prf) = corevpn_crypto::openvpn_prf(
-                                                            &master,
-                                                            b"OpenVPN key expansion",
-                                                            &expansion_seed,
-                                                            256,
-                                                        ) {
-                                                            let key_material = corevpn_crypto::KeyMaterial::from_openvpn_key2_block(&key_block_prf);
-                                                            conn.protocol.install_keys(&key_material, true);
-                                                            debug!("Derived data channel keys via PRF fallback for {}", peer_addr);
-                                                        }
-                                                    }
+                                                if let Ok(prf_key_block) = corevpn_crypto::openvpn_prf(
+                                                    &master,
+                                                    b"OpenVPN key expansion",
+                                                    &expansion_seed,
+                                                    256,
+                                                ) {
+                                                    let prf_km = corevpn_crypto::KeyMaterial::from_openvpn_key2_block(&prf_key_block);
+                                                    info!("PRF key[1].cipher[..8]={:02x?}, key[1].hmac[..8]={:02x?}",
+                                                        &prf_key_block[128..136], &prf_key_block[192..200]);
+                                                    
+                                                    // INSTALL PRF KEYS (test hypothesis: client uses PRF)
+                                                    conn.protocol.install_keys(&prf_km, true);
+                                                    info!("INSTALLED PRF KEYS for {} (testing EKM vs PRF)", peer_addr);
+                                                }
+                                            } else {
+                                                // PRF failed, fall back to EKM
+                                                if ekm_ok {
+                                                    let ekm_km = corevpn_crypto::KeyMaterial::from_openvpn_key2_block(&ekm_key_block);
+                                                    conn.protocol.install_keys(&ekm_km, true);
+                                                    info!("Installed EKM keys (PRF failed) for {}", peer_addr);
                                                 }
                                             }
                                         }
