@@ -799,10 +799,11 @@ async fn handle_control_packet(
                                                     let key_material = corevpn_crypto::KeyMaterial::from_openvpn_key2_block(&key_block);
                                                     info!("EKM key block (256 bytes): key[0].cipher[..8]={:02x?}, key[0].hmac[..12]={:02x?}, key[1].cipher[..8]={:02x?}, key[1].hmac[..12]={:02x?}",
                                                         &key_block[0..8], &key_block[64..76], &key_block[128..136], &key_block[192..204]);
-                                                    info!("Server encrypt key (key[0]): {:02x?}", &key_material.server_write_key[..8]);
+                                                    info!("Server encrypt key FULL (key[0]): {:02x?}", &key_material.server_write_key);
                                                     info!("Server encrypt IV (key[0]): {:02x?}", &key_material.server_implicit_iv);
-                                                    info!("Client encrypt key (key[1]): {:02x?}", &key_material.client_write_key[..8]);
+                                                    info!("Client encrypt key FULL (key[1]): {:02x?}", &key_material.client_write_key);
                                                     info!("Client encrypt IV (key[1]): {:02x?}", &key_material.client_implicit_iv);
+                                                    info!("Negotiated cipher suite: {}", negotiated_cipher);
                                                     conn.protocol.install_keys(&key_material, true);
                                                     info!("Derived data channel keys via EKM for {} (TLS 1.3)", peer_addr);
                                                 }
