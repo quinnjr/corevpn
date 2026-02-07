@@ -130,9 +130,15 @@ impl KeyMaterial {
     /// - bytes 128..192:  key[1].cipher (first 32 used as cipher key)
     /// - bytes 192..256:  key[1].hmac   (first 8 used as implicit IV for AEAD)
     ///
-    /// Key direction (determined by init_key_ctx_bi with KEY_DIRECTION):
-    /// - key[0] = client encrypt / server decrypt (client→server direction)
-    /// - key[1] = server encrypt / client decrypt (server→client direction)
+    /// Key direction mapping (OpenVPN init_key_ctx_bi with KEY_DIRECTION):
+    ///   encrypt = keys[(d+0)&1], decrypt = keys[(d+1)&1]
+    ///
+    /// Client uses keydir=1: encrypt=key[1], decrypt=key[0]
+    /// Server uses keydir=0: encrypt=key[0], decrypt=key[1]
+    ///
+    /// Therefore:
+    /// - key[0] = server encrypt / client decrypt (server→client direction)
+    /// - key[1] = client encrypt / server decrypt (client→server direction)
     ///
     /// OpenVPN non-epoch AEAD implicit IV layout (12 bytes):
     ///   [0..4] = 0x00000000  (the packet-id is placed here in the nonce, NOT XORed)
@@ -151,14 +157,14 @@ impl KeyMaterial {
             client_implicit_iv: [0u8; 12],
             server_implicit_iv: [0u8; 12],
         };
-        // key[0] = client encrypt direction (client→server)
-        material.client_write_key.copy_from_slice(&block[0..32]);
+        // key[0] = server encrypt / client decrypt (server→client)
+        material.server_write_key.copy_from_slice(&block[0..32]);
         // OpenVPN non-epoch format: implicit_iv[0..4] = 0, implicit_iv[4..12] = hmac[0..8]
         // (see key_ctx_update_implicit_iv in OpenVPN crypto.c)
-        material.client_implicit_iv[4..12].copy_from_slice(&block[64..72]);
-        // key[1] = server encrypt direction (server→client)
-        material.server_write_key.copy_from_slice(&block[128..160]);
-        material.server_implicit_iv[4..12].copy_from_slice(&block[192..200]);
+        material.server_implicit_iv[4..12].copy_from_slice(&block[64..72]);
+        // key[1] = client encrypt / server decrypt (client→server)
+        material.client_write_key.copy_from_slice(&block[128..160]);
+        material.client_implicit_iv[4..12].copy_from_slice(&block[192..200]);
         material
     }
 

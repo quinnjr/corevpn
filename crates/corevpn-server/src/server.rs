@@ -731,14 +731,16 @@ async fn handle_control_packet(
                                                     //   key[0].cipher[64] | key[0].hmac[64] | key[1].cipher[64] | key[1].hmac[64]
                                                     // For AES-256-GCM AEAD:
                                                     //   key[0].cipher[0..32] = cipher key, key[0].hmac[0..12] = implicit IV
-                                                    // Direction: key[0] = client encrypt (client→server), key[1] = server encrypt (server→client)
+                                                    // Direction (with client keydir=1, server keydir=0):
+                                                    //   key[0] = server encrypt / client decrypt (server→client)
+                                                    //   key[1] = client encrypt / server decrypt (client→server)
                                                     let key_material = corevpn_crypto::KeyMaterial::from_openvpn_key2_block(&key_block);
                                                     debug!("EKM key block (256 bytes): key[0].cipher[..8]={:02x?}, key[0].hmac[..12]={:02x?}, key[1].cipher[..8]={:02x?}, key[1].hmac[..12]={:02x?}",
                                                         &key_block[0..8], &key_block[64..76], &key_block[128..136], &key_block[192..204]);
-                                                    debug!("Client encrypt key: {:02x?}", &key_material.client_write_key[..8]);
-                                                    debug!("Client encrypt IV: {:02x?}", &key_material.client_implicit_iv);
-                                                    debug!("Server encrypt key: {:02x?}", &key_material.server_write_key[..8]);
-                                                    debug!("Server encrypt IV: {:02x?}", &key_material.server_implicit_iv);
+                                                    debug!("Server encrypt key (key[0]): {:02x?}", &key_material.server_write_key[..8]);
+                                                    debug!("Server encrypt IV (key[0]): {:02x?}", &key_material.server_implicit_iv);
+                                                    debug!("Client encrypt key (key[1]): {:02x?}", &key_material.client_write_key[..8]);
+                                                    debug!("Client encrypt IV (key[1]): {:02x?}", &key_material.client_implicit_iv);
                                                     conn.protocol.install_keys(&key_material, true);
                                                     info!("Derived data channel keys via EKM for {} (TLS 1.3)", peer_addr);
                                                 }
