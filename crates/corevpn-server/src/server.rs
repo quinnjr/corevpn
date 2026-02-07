@@ -3,15 +3,23 @@
 //! Handles OpenVPN-compatible connections with TLS and OAuth2 authentication.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use bytes::Bytes;
 use parking_lot::RwLock;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
 use tracing::{info, warn, error, debug, trace};
+use tun::Device as TunDevice;
+
+/// OpenVPN keepalive ping magic payload
+const OPENVPN_PING_PAYLOAD: [u8; 16] = [
+    0x2a, 0x18, 0x7b, 0xf3, 0x64, 0x1e, 0xb4, 0xcb,
+    0x07, 0xed, 0x2d, 0x0a, 0x98, 0x1f, 0xc7, 0x48,
+];
 
 use corevpn_config::{ConnectionLogMode, ServerConfig};
 use corevpn_core::{SessionManager, AddressPool};
@@ -274,7 +282,72 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
     let socket = UdpSocket::bind(&config.server.listen_addr).await?;
     let socket = Arc::new(socket);
 
-    // Drop privileges after binding (if running as root)
+    // Create TUN device for data plane
+    let subnet_net: ipnet::Ipv4Net = config.network.subnet.parse()
+        .map_err(|e| anyhow::anyhow!("Invalid subnet for TUN: {}", e))?;
+    let gateway_ip = server.address_pool.gateway_v4()
+        .unwrap_or(Ipv4Addr::new(10, 8, 0, 1));
+
+    let mut tun_config = tun::Configuration::default();
+    tun_config.name("tun0");
+    tun_config.address(gateway_ip);
+    tun_config.netmask(subnet_net.netmask());
+    tun_config.mtu(1500);
+    tun_config.up();
+
+    #[cfg(target_os = "linux")]
+    tun_config.platform(|p| {
+        p.packet_information(false); // No IFF_PI header
+    });
+
+    let tun_device = tun::create(&tun_config)
+        .map_err(|e| anyhow::anyhow!("Failed to create TUN device: {}", e))?;
+    let tun_name = tun_device.name()
+        .map_err(|e| anyhow::anyhow!("Failed to get TUN device name: {}", e))?;
+    info!("TUN device created: {} (IP: {}/{})", tun_name, gateway_ip, subnet_net.prefix_len());
+
+    let tun_device = tun::AsyncDevice::new(tun_device)
+        .map_err(|e| anyhow::anyhow!("Failed to create async TUN device: {}", e))?;
+
+    // Enable IP forwarding
+    if let Err(e) = std::fs::write("/proc/sys/net/ipv4/ip_forward", "1") {
+        warn!("Failed to enable IP forwarding (may already be enabled): {}", e);
+    } else {
+        info!("IP forwarding enabled");
+    }
+
+    // Set up NAT/masquerading
+    let default_iface = get_default_interface().unwrap_or_else(|| "eth0".to_string());
+    info!("Setting up NAT on interface: {}", default_iface);
+
+    let _ = std::process::Command::new("iptables")
+        .args(["-t", "nat", "-A", "POSTROUTING", "-s", &config.network.subnet, "-o", &default_iface, "-j", "MASQUERADE"])
+        .status();
+    let _ = std::process::Command::new("iptables")
+        .args(["-A", "FORWARD", "-i", &tun_name, "-o", &default_iface, "-j", "ACCEPT"])
+        .status();
+    let _ = std::process::Command::new("iptables")
+        .args(["-A", "FORWARD", "-i", &default_iface, "-o", &tun_name, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"])
+        .status();
+    info!("NAT/masquerading configured");
+
+    // Split TUN device into reader and writer halves
+    let (mut tun_reader, tun_writer) = tokio::io::split(tun_device);
+
+    // Channel for sending data to TUN device (avoids holding connection locks across await points)
+    let (tun_write_tx, mut tun_write_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4096);
+
+    // Spawn TUN writer task
+    tokio::spawn(async move {
+        let mut writer = tun_writer;
+        while let Some(data) = tun_write_rx.recv().await {
+            if let Err(e) = writer.write_all(&data).await {
+                warn!("TUN write error: {}", e);
+            }
+        }
+    });
+
+    // Drop privileges after binding and TUN creation (if running as root)
     drop_privileges()?;
 
     info!("Server ready, waiting for connections...");
@@ -301,28 +374,53 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         }
     });
 
-    // Main receive loop
-    let mut buf = vec![0u8; 65535];
+    // Main event loop: multiplex UDP recv, TUN read, and keepalive timer
+    let mut udp_buf = vec![0u8; 65535];
+    let mut tun_buf = vec![0u8; 65535];
+    let mut ping_interval = tokio::time::interval(Duration::from_secs(10));
 
     loop {
-        let (len, peer_addr) = match socket.recv_from(&mut buf).await {
-            Ok(result) => result,
-            Err(e) => {
-                error!("Receive error: {}", e);
-                continue;
+        tokio::select! {
+            // Receive UDP packet from client
+            result = socket.recv_from(&mut udp_buf) => {
+                match result {
+                    Ok((len, peer_addr)) => {
+                        let packet_data = Bytes::copy_from_slice(&udp_buf[..len]);
+                        if let Err(e) = handle_packet(&server, &socket, peer_addr, packet_data, &tun_write_tx).await {
+                            debug!("Packet handling error from {}: {}", peer_addr, e);
+                        }
+                    }
+                    Err(e) => {
+                        error!("UDP receive error: {}", e);
+                    }
+                }
             }
-        };
-
-        let packet_data = Bytes::copy_from_slice(&buf[..len]);
-        let socket_clone = socket.clone();
-        let server_clone = server.clone();
-
-        // Handle packet - directly without spawning to avoid Send issues
-        // In production, you'd use a message passing channel instead
-        if let Err(e) = handle_packet(&server_clone, &socket_clone, peer_addr, packet_data).await {
-            debug!("Packet handling error from {}: {}", peer_addr, e);
+            // Read IP packet from TUN (outbound to client)
+            result = tun_reader.read(&mut tun_buf) => {
+                match result {
+                    Ok(0) => {
+                        warn!("TUN device closed");
+                        break;
+                    }
+                    Ok(n) => {
+                        let ip_packet = &tun_buf[..n];
+                        if let Err(e) = handle_tun_packet(&server, &socket, ip_packet).await {
+                            debug!("TUN packet handling error: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        error!("TUN read error: {}", e);
+                    }
+                }
+            }
+            // Send keepalive pings to established connections
+            _ = ping_interval.tick() => {
+                send_keepalive_pings(&server, &socket).await;
+            }
         }
     }
+
+    Ok(())
 }
 
 /// Cleanup stale connections
@@ -365,6 +463,7 @@ async fn handle_packet(
     socket: &UdpSocket,
     peer_addr: SocketAddr,
     data: Bytes,
+    tun_write_tx: &tokio::sync::mpsc::Sender<Vec<u8>>,
 ) -> Result<()> {
     if data.is_empty() {
         return Ok(());
@@ -382,7 +481,7 @@ async fn handle_packet(
             handle_control_packet(server, socket, peer_addr, &data).await?;
         }
         OpCode::DataV1 | OpCode::DataV2 => {
-            handle_data_packet(server, socket, peer_addr, &data).await?;
+            handle_data_packet(server, socket, peer_addr, &data, tun_write_tx).await?;
         }
         _ => {
             debug!("Unhandled opcode: {}", opcode);
@@ -570,12 +669,13 @@ async fn handle_control_packet(
                                         debug!("Negotiated cipher: {} for {}", negotiated_cipher, peer_addr);
 
                                         // Generate server's key_method_v2
-                                        let server_pre_master: [u8; 48] = corevpn_crypto::random_bytes();
+                                        // Note: server does NOT send pre_master (encode(true) skips it).
+                                        // Only random1 and random2 are sent and used.
                                         let server_random1: [u8; 32] = corevpn_crypto::random_bytes();
                                         let server_random2: [u8; 32] = corevpn_crypto::random_bytes();
 
                                         let server_km = corevpn_protocol::KeyMethodV2 {
-                                            pre_master: server_pre_master,
+                                            pre_master: [0u8; 48], // not sent on wire (is_server=true)
                                             random1: server_random1,
                                             random2: server_random2,
                                             options: format!(
@@ -608,60 +708,73 @@ async fn handle_control_packet(
                                             }
                                         }
 
-                                        // Derive data channel keys using OpenVPN PRF
-                                        // NOTE: EKM (TLS Exported Keying Material) is disabled for now.
-                                        // OpenVPN clients may advertise EKM support via IV_PROTO bit 4,
-                                        // but in practice with TLS 1.3 (rustls) the client's OpenSSL
-                                        // reports TLS_export=0 and falls back to PRF, causing a key
-                                        // mismatch if the server uses EKM. Always use PRF until EKM
-                                        // interop is verified end-to-end.
+                                        // Derive data channel keys
+                                        //
+                                        // With TLS 1.3 (used by rustls), OpenVPN 2.6+ uses TLS Exported
+                                        // Keying Material (EKM, RFC 5705) instead of the legacy OpenVPN PRF.
+                                        // The EKM approach directly exports 256 bytes from the TLS session
+                                        // into the key2 block.
+                                        //
+                                        // Label: "EXPORTER-OpenVPN-datakeys"
+                                        // Context: NONE (OpenVPN calls SSL_export_keying_material
+                                        //          with use_context=0, i.e. no context at all)
+                                        // Output: 256 bytes → key2 struct layout
                                         {
-                                            let mut combined_pre_master = [0u8; 48];
-                                            for i in 0..48 {
-                                                combined_pre_master[i] = client_km.pre_master[i] ^ server_pre_master[i];
-                                            }
-                                            // PRF seed: client.random1 + server.random1 + client.random2 + server.random2
-                                            let mut seed = Vec::new();
-                                            seed.extend_from_slice(&client_km.random1);
-                                            seed.extend_from_slice(&server_random1);
-                                            seed.extend_from_slice(&client_km.random2);
-                                            seed.extend_from_slice(&server_random2);
-
-                                            // Step 1: Derive 48-byte master secret (matches OpenVPN's sizeof(master))
-                                            match corevpn_crypto::openvpn_prf(
-                                                &combined_pre_master,
-                                                b"OpenVPN master secret",
-                                                &seed,
-                                                48,
+                                            let mut key_block = vec![0u8; 256];
+                                            match tls.export_keying_material(
+                                                &mut key_block,
+                                                b"EXPORTER-OpenVPN-datakeys",
+                                                None,
                                             ) {
-                                                Ok(master) => {
-                                                    // Step 2: Expand to 256-byte key block
-                                                    match corevpn_crypto::openvpn_prf(
-                                                        &master,
-                                                        b"OpenVPN key expansion",
-                                                        &seed,
-                                                        256,
-                                                    ) {
-                                                        Ok(key_block) => {
-                                                            // For AEAD ciphers (AES-256-GCM), OpenVPN reads
-                                                            // keys sequentially: cipher_key(32) + implicit_iv(12)
-                                                            // per direction = 88 bytes total
-                                                            let key_material = corevpn_crypto::KeyMaterial::from_openvpn_aead_key_block(&key_block);
-                                                            debug!("Key block first 88 bytes: {:02x?}", &key_block[..88]);
-                                                            debug!("Server encrypt key (key[0]): {:02x?}", &key_material.server_write_key[..8]);
-                                                            debug!("Server encrypt IV: {:02x?}", &key_material.server_implicit_iv);
-                                                            debug!("Client encrypt key (key[1]): {:02x?}", &key_material.client_write_key[..8]);
-                                                            debug!("Client encrypt IV: {:02x?}", &key_material.client_implicit_iv);
-                                                            conn.protocol.install_keys(&key_material, true);
-                                                            debug!("Derived data channel keys via PRF for {} (master=48, block=256, AEAD layout)", peer_addr);
-                                                        }
-                                                        Err(e) => {
-                                                            warn!("Key expansion failed for {}: {}", peer_addr, e);
-                                                        }
-                                                    }
+                                                Ok(()) => {
+                                                    // OpenVPN key2 struct layout (256 bytes):
+                                                    //   key[0].cipher[64] | key[0].hmac[64] | key[1].cipher[64] | key[1].hmac[64]
+                                                    // For AES-256-GCM AEAD:
+                                                    //   key[0].cipher[0..32] = cipher key, key[0].hmac[0..12] = implicit IV
+                                                    // Direction: key[0] = client encrypt (client→server), key[1] = server encrypt (server→client)
+                                                    let key_material = corevpn_crypto::KeyMaterial::from_openvpn_key2_block(&key_block);
+                                                    debug!("EKM key block (256 bytes): key[0].cipher[..8]={:02x?}, key[0].hmac[..12]={:02x?}, key[1].cipher[..8]={:02x?}, key[1].hmac[..12]={:02x?}",
+                                                        &key_block[0..8], &key_block[64..76], &key_block[128..136], &key_block[192..204]);
+                                                    debug!("Client encrypt key: {:02x?}", &key_material.client_write_key[..8]);
+                                                    debug!("Client encrypt IV: {:02x?}", &key_material.client_implicit_iv);
+                                                    debug!("Server encrypt key: {:02x?}", &key_material.server_write_key[..8]);
+                                                    debug!("Server encrypt IV: {:02x?}", &key_material.server_implicit_iv);
+                                                    conn.protocol.install_keys(&key_material, true);
+                                                    info!("Derived data channel keys via EKM for {} (TLS 1.3)", peer_addr);
                                                 }
                                                 Err(e) => {
-                                                    warn!("PRF key derivation failed for {}: {}", peer_addr, e);
+                                                    // EKM failed, fall back to legacy OpenVPN PRF
+                                                    warn!("EKM export failed for {}: {}, falling back to PRF", peer_addr, e);
+
+                                                    let mut master_seed = Vec::with_capacity(64);
+                                                    master_seed.extend_from_slice(&client_km.random1);
+                                                    master_seed.extend_from_slice(&server_random1);
+
+                                                    if let Ok(master) = corevpn_crypto::openvpn_prf(
+                                                        &client_km.pre_master,
+                                                        b"OpenVPN master secret",
+                                                        &master_seed,
+                                                        48,
+                                                    ) {
+                                                        let mut expansion_seed = Vec::with_capacity(80);
+                                                        expansion_seed.extend_from_slice(&client_km.random2);
+                                                        expansion_seed.extend_from_slice(&server_random2);
+                                                        if let Some(remote_sid) = conn.protocol.remote_session_id() {
+                                                            expansion_seed.extend_from_slice(remote_sid);
+                                                        }
+                                                        expansion_seed.extend_from_slice(conn.protocol.local_session_id());
+
+                                                        if let Ok(key_block_prf) = corevpn_crypto::openvpn_prf(
+                                                            &master,
+                                                            b"OpenVPN key expansion",
+                                                            &expansion_seed,
+                                                            256,
+                                                        ) {
+                                                            let key_material = corevpn_crypto::KeyMaterial::from_openvpn_key2_block(&key_block_prf);
+                                                            conn.protocol.install_keys(&key_material, true);
+                                                            debug!("Derived data channel keys via PRF fallback for {}", peer_addr);
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -695,6 +808,9 @@ async fn handle_control_packet(
 
                                                 // Add redirect gateway if configured
                                                 push_reply.redirect_gateway = server.config.network.redirect_gateway;
+                                                if server.config.network.redirect_gateway {
+                                                    push_reply.route_gateway = Some(gateway_ip.clone());
+                                                }
 
                                                 push_reply.ping = 10;
                                                 push_reply.ping_restart = 60;
@@ -813,46 +929,186 @@ async fn handle_control_packet(
 
 async fn handle_data_packet(
     server: &VpnServer,
-    _socket: &UdpSocket,
+    socket: &UdpSocket,
     peer_addr: SocketAddr,
     data: &[u8],
+    tun_write_tx: &tokio::sync::mpsc::Sender<Vec<u8>>,
 ) -> Result<()> {
-    // Get existing connection
-    let mut connections = server.connections.write();
-    let conn = match connections.get_mut(&peer_addr) {
-        Some(c) => c,
-        None => {
-            debug!("No session for data packet from {}", peer_addr);
+    // Process data inside lock scope, collect results for async operations outside
+    let (tun_data, response_packets) = {
+        let mut connections = server.connections.write();
+        let conn = match connections.get_mut(&peer_addr) {
+            Some(c) => c,
+            None => {
+                debug!("No session for data packet from {}", peer_addr);
+                return Ok(());
+            }
+        };
+
+        conn.touch();
+
+        // Only process data if established
+        if conn.protocol.state() != ProtocolState::Established {
+            debug!("Data packet before established from {}", peer_addr);
             return Ok(());
         }
-    };
 
-    conn.touch();
+        // Track incoming bytes
+        conn.add_bytes_rx(data.len() as u64);
 
-    // Only process data if established
-    if conn.protocol.state() != ProtocolState::Established {
-        debug!("Data packet before established from {}", peer_addr);
-        return Ok(());
+        // Debug: hex dump first data packets
+        if conn.stats.packets_rx <= 3 {
+            let hex: String = data.iter().take(64).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+            debug!("Data packet #{} from {} ({} bytes): {}{}", conn.stats.packets_rx, peer_addr, data.len(), hex, if data.len() > 64 { "..." } else { "" });
+        }
+
+        // Process data packet (decrypt)
+        let result = conn.protocol.process_packet(data)?;
+
+        let mut tun_data: Option<Vec<u8>> = None;
+        let mut response_packets: Vec<Bytes> = Vec::new();
+
+        if let ProcessedPacket::Data(ip_packet) = result {
+            if ip_packet.len() == OPENVPN_PING_PAYLOAD.len() && ip_packet.as_ref() == OPENVPN_PING_PAYLOAD {
+                // OpenVPN keepalive ping - respond with ping back
+                trace!("Received keepalive ping from {}, responding", peer_addr);
+                match conn.protocol.encrypt_data(&OPENVPN_PING_PAYLOAD) {
+                    Ok(encrypted) => {
+                        conn.add_bytes_tx(encrypted.len() as u64);
+                        response_packets.push(encrypted);
+                    }
+                    Err(e) => {
+                        warn!("Failed to encrypt ping response for {}: {}", peer_addr, e);
+                    }
+                }
+            } else if ip_packet.len() >= 20 {
+                // Real IP packet - forward to TUN device
+                trace!("Received {} bytes of tunnel data from {}", ip_packet.len(), peer_addr);
+                tun_data = Some(ip_packet.to_vec());
+            } else {
+                debug!("Short data packet ({} bytes) from {}, ignoring", ip_packet.len(), peer_addr);
+            }
+        }
+
+        (tun_data, response_packets)
+    }; // Connection lock released here
+
+    // Send response packets (ping responses) via UDP - no lock held
+    for packet in response_packets {
+        if let Err(e) = socket.send_to(&packet, peer_addr).await {
+            warn!("Failed to send data packet to {}: {}", peer_addr, e);
+        }
     }
 
-    // Track incoming bytes
-    conn.add_bytes_rx(data.len() as u64);
-
-    // Debug: log first bytes of data packet for crypto debugging
-    let payload_start = if data.len() > 4 { 4 } else { 1 }; // skip opcode+peer_id for V2
-    if data.len() > payload_start + 20 {
-        debug!("Data packet from {}: len={}, payload first 24 bytes: {:02x?}",
-            peer_addr, data.len(), &data[payload_start..payload_start+24.min(data.len()-payload_start)]);
-    }
-
-    // Process data packet
-    let result = conn.protocol.process_packet(data)?;
-
-    if let ProcessedPacket::Data(ip_packet) = result {
-        trace!("Received {} bytes of tunnel data from {}", ip_packet.len(), peer_addr);
+    // Write decrypted IP data to TUN device - no lock held
+    if let Some(ip_data) = tun_data {
+        if let Err(e) = tun_write_tx.try_send(ip_data) {
+            warn!("Failed to send to TUN (channel full or closed): {}", e);
+        }
     }
 
     Ok(())
+}
+
+/// Handle an IP packet read from the TUN device (route to appropriate client)
+async fn handle_tun_packet(
+    server: &VpnServer,
+    socket: &UdpSocket,
+    ip_packet: &[u8],
+) -> Result<()> {
+    // Extract destination IPv4 address from IP header (bytes 16..20)
+    if ip_packet.len() < 20 {
+        return Ok(());
+    }
+
+    // Check IP version (first nibble)
+    let version = ip_packet[0] >> 4;
+    if version != 4 {
+        trace!("Non-IPv4 packet from TUN (version={}), ignoring", version);
+        return Ok(());
+    }
+
+    let dest_ip = Ipv4Addr::new(ip_packet[16], ip_packet[17], ip_packet[18], ip_packet[19]);
+
+    // Find the connection with this VPN IP and encrypt the packet
+    let (peer_addr, encrypted) = {
+        let mut connections = server.connections.write();
+        let conn = connections.values_mut()
+            .find(|c| c.vpn_ip == Some(dest_ip) && c.protocol.state() == ProtocolState::Established);
+
+        match conn {
+            Some(conn) => {
+                match conn.protocol.encrypt_data(ip_packet) {
+                    Ok(encrypted) => {
+                        conn.add_bytes_tx(encrypted.len() as u64);
+                        (conn.peer_addr, encrypted)
+                    }
+                    Err(e) => {
+                        debug!("Failed to encrypt packet for {}: {}", dest_ip, e);
+                        return Ok(());
+                    }
+                }
+            }
+            None => {
+                trace!("No client with VPN IP {}, dropping TUN packet", dest_ip);
+                return Ok(());
+            }
+        }
+    }; // Lock released
+
+    // Send encrypted packet to client via UDP
+    if let Err(e) = socket.send_to(&encrypted, peer_addr).await {
+        warn!("Failed to send encrypted data to {}: {}", peer_addr, e);
+    }
+
+    Ok(())
+}
+
+/// Send keepalive pings to all established connections
+async fn send_keepalive_pings(
+    server: &VpnServer,
+    socket: &UdpSocket,
+) {
+    // Collect ping packets while holding lock (sync encrypt operation)
+    let ping_packets: Vec<(SocketAddr, Bytes)> = {
+        let mut connections = server.connections.write();
+        connections.values_mut()
+            .filter(|c| c.protocol.state() == ProtocolState::Established)
+            .filter_map(|conn| {
+                match conn.protocol.encrypt_data(&OPENVPN_PING_PAYLOAD) {
+                    Ok(encrypted) => {
+                        conn.add_bytes_tx(encrypted.len() as u64);
+                        Some((conn.peer_addr, encrypted))
+                    }
+                    Err(e) => {
+                        debug!("Failed to encrypt keepalive for {}: {}", conn.peer_addr, e);
+                        None
+                    }
+                }
+            })
+            .collect()
+    }; // Lock released
+
+    // Send all pings without holding lock
+    for (addr, packet) in ping_packets {
+        if let Err(e) = socket.send_to(&packet, addr).await {
+            debug!("Failed to send keepalive to {}: {}", addr, e);
+        }
+    }
+}
+
+/// Detect the default network interface from the routing table
+fn get_default_interface() -> Option<String> {
+    if let Ok(content) = std::fs::read_to_string("/proc/net/route") {
+        for line in content.lines().skip(1) {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            // Default route has destination 00000000
+            if fields.len() >= 2 && fields[1] == "00000000" {
+                return Some(fields[0].to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Statistics for the server

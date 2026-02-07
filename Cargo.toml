@@ -63,7 +63,7 @@ tokio-rustls = "0.26"
 webpki-roots = "0.26"
 
 # TUN device
-tun = "0.6"
+tun = { version = "0.6", features = ["async"] }
 
 # OAuth2/OIDC
 openidconnect = "3"

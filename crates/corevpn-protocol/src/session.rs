@@ -131,6 +131,8 @@ pub struct ProtocolSession {
     tls_auth_key: Option<corevpn_crypto::HmacAuth>,
     /// Replay window for tls-auth packet IDs
     replay_window: ReplayWindow,
+    /// Outgoing tls-auth packet ID counter (for replay protection)
+    tls_auth_packet_id: u32,
     /// Session creation time
     created_at: Instant,
     /// Last activity time
@@ -154,6 +156,7 @@ impl ProtocolSession {
             use_tls_auth: false,
             tls_auth_key: None,
             replay_window: ReplayWindow::new(),
+            tls_auth_packet_id: 1, // OpenVPN packet IDs start at 1 (0 is invalid)
             created_at: Instant::now(),
             last_activity: Instant::now(),
             cipher_suite,
@@ -203,23 +206,38 @@ impl ProtocolSession {
     pub fn process_packet(&mut self, data: &[u8]) -> Result<ProcessedPacket> {
         self.last_activity = Instant::now();
 
-        // Verify HMAC if tls-auth enabled
-        let data = if self.use_tls_auth {
+        // Verify HMAC if tls-auth enabled for control packets
+        if self.use_tls_auth {
             if let Some(key) = &self.tls_auth_key {
-                // First byte is opcode, check if control
                 if !data.is_empty() && OpCode::from_byte(data[0])?.is_control() {
-                    key.unwrap(data)?
-                } else {
-                    data.to_vec()
-                }
-            } else {
-                data.to_vec()
-            }
-        } else {
-            data.to_vec()
-        };
+                    // OpenVPN tls-auth wire format:
+                    // [opcode(1)] [session_id(8)] [HMAC(32)] [pid(4)] [time(4)] [rest...]
+                    //
+                    // HMAC covers (via swap_hmac rearrangement):
+                    // [pid(4)] [time(4)] [opcode(1)] [session_id(8)] [rest...]
+                    // = data[41..49] ++ data[0..9] ++ data[49..]
+                    if data.len() < 49 {
+                        return Err(ProtocolError::PacketTooShort {
+                            expected: 49,
+                            got: data.len(),
+                        });
+                    }
 
-        let packet = Packet::parse(&data, self.use_tls_auth)?;
+                    let mut hmac = [0u8; 32];
+                    hmac.copy_from_slice(&data[9..41]); // HMAC at offset 9
+
+                    // Build HMAC input: pid + time + opcode + session_id + rest
+                    let mut hmac_input = Vec::with_capacity(8 + 9 + data.len() - 49);
+                    hmac_input.extend_from_slice(&data[41..49]); // pid(4) + time(4)
+                    hmac_input.extend_from_slice(&data[0..9]);   // opcode(1) + session_id(8)
+                    hmac_input.extend_from_slice(&data[49..]);   // rest
+
+                    key.verify(&hmac_input, &hmac)?;
+                }
+            }
+        }
+
+        let packet = Packet::parse(data, self.use_tls_auth)?;
 
         match packet {
             Packet::Control(ctrl) => self.process_control_packet(ctrl),
@@ -451,11 +469,15 @@ impl ProtocolSession {
             )
         };
 
+        // Use V2 data packets only if we have a negotiated peer_id.
+        // When peer_id is None, both sides use P_DATA_V1 where the
+        // opcode is NOT included in the AEAD AAD.
+        let use_v2 = self.peer_id.is_some();
         self.data_channels[idx] = Some(DataChannel::new(
             key_id,
             encrypt_key,
             decrypt_key,
-            true,
+            use_v2,
             self.peer_id,
         ));
     }
@@ -523,10 +545,55 @@ impl ProtocolSession {
         self.last_activity.elapsed()
     }
 
-    fn maybe_wrap_tls_auth(&self, data: Bytes) -> Bytes {
+    fn maybe_wrap_tls_auth(&mut self, data: Bytes) -> Bytes {
         if self.use_tls_auth {
             if let Some(key) = &self.tls_auth_key {
-                return Bytes::from(key.wrap(&data));
+                // OpenVPN tls-auth wire format:
+                // [opcode(1)] [session_id(8)] [HMAC(32)] [pid(4)] [time(4)] [rest...]
+                //
+                // Input `data` is a serialized packet: [opcode(1)] [session_id(8)] [rest...]
+                //
+                // HMAC is computed over (internal/swap format):
+                //   [pid(4)] [time(4)] [opcode(1)] [session_id(8)] [rest...]
+                // Which equals: pid_bytes + time_bytes + entire_input_data
+                //
+                // Wire output: data[0..9] + HMAC + pid_bytes + time_bytes + data[9..]
+
+                if data.len() < 9 {
+                    return data;
+                }
+
+                // Allocate outgoing packet ID
+                let packet_id = self.tls_auth_packet_id;
+                self.tls_auth_packet_id += 1;
+
+                // Current timestamp
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as u32;
+
+                let pid_bytes = packet_id.to_be_bytes();
+                let time_bytes = timestamp.to_be_bytes();
+
+                // Build HMAC input: pid + time + entire original packet
+                // (This matches OpenVPN's swap_hmac internal format)
+                let mut hmac_input = Vec::with_capacity(8 + data.len());
+                hmac_input.extend_from_slice(&pid_bytes);
+                hmac_input.extend_from_slice(&time_bytes);
+                hmac_input.extend_from_slice(&data); // opcode + session_id + rest
+
+                let hmac = key.authenticate(&hmac_input);
+
+                // Build wire format: [opcode+session_id] [HMAC] [pid] [time] [rest]
+                let mut output = Vec::with_capacity(data.len() + 32 + 8);
+                output.extend_from_slice(&data[0..9]);       // opcode(1) + session_id(8)
+                output.extend_from_slice(&hmac);              // HMAC(32)
+                output.extend_from_slice(&pid_bytes);         // pid(4)
+                output.extend_from_slice(&time_bytes);        // time(4)
+                output.extend_from_slice(&data[9..]);         // rest (ack_stuff, msg_pid, payload)
+
+                return Bytes::from(output);
             }
         }
         data

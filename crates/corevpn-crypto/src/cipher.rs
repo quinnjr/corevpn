@@ -269,29 +269,37 @@ impl PacketCipher {
         nonce
     }
 
-    /// Encrypt a packet (OpenVPN AEAD format).
+    /// Encrypt a packet (OpenVPN AEAD tag-at-end format).
     ///
-    /// Returns: [packet_id(4)] [AEAD_tag(16)] [ciphertext]
+    /// `ad_prefix` is the header bytes (opcode + peer_id for V2) that precede
+    /// the packet ID in the on-wire format. OpenVPN authenticates these as part
+    /// of the AEAD AAD: AAD = [ad_prefix] [packet_id(4)].
+    ///
+    /// Returns: [packet_id(4)] [ciphertext] [AEAD_tag(16)]
+    ///
+    /// OpenVPN 2.6+ uses AEAD tag at the end by default for AEAD ciphers.
+    /// The AEAD library naturally produces ciphertext||tag, so this is the
+    /// standard format: [pid(4)] [ciphertext||tag].
     #[inline]
-    pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>> {
+    pub fn encrypt(&mut self, plaintext: &[u8], ad_prefix: &[u8]) -> Result<Vec<u8>> {
         self.tx_counter = self.tx_counter.checked_add(1)
             .ok_or(CryptoError::EncryptionFailed("packet counter overflow"))?;
 
         let pid_bytes = self.tx_counter.to_be_bytes();
         let nonce = self.build_nonce(&pid_bytes);
 
-        // AEAD encrypt: produces ciphertext || tag
-        let ct_tag = self.cipher.encrypt(&nonce, plaintext, &pid_bytes)?;
+        // Build full AAD: [ad_prefix] [pid(4)]
+        let mut aad = Vec::with_capacity(ad_prefix.len() + PACKET_ID_SIZE);
+        aad.extend_from_slice(ad_prefix);
+        aad.extend_from_slice(&pid_bytes);
 
-        // Rearrange to OpenVPN on-wire format: [pid(4)][tag(16)][ciphertext]
-        let ct_len = ct_tag.len() - CipherSuite::TAG_SIZE;
-        let tag = &ct_tag[ct_len..];
-        let ct = &ct_tag[..ct_len];
+        // AEAD encrypt: produces ciphertext || tag (standard AEAD output)
+        let ct_tag = self.cipher.encrypt(&nonce, plaintext, &aad)?;
 
-        let mut output = Vec::with_capacity(PACKET_ID_SIZE + CipherSuite::TAG_SIZE + ct_len);
+        // Tag-at-end format: [pid(4)] [ciphertext||tag]
+        let mut output = Vec::with_capacity(PACKET_ID_SIZE + ct_tag.len());
         output.extend_from_slice(&pid_bytes);
-        output.extend_from_slice(tag);
-        output.extend_from_slice(ct);
+        output.extend_from_slice(&ct_tag);
 
         Ok(output)
     }
@@ -301,32 +309,40 @@ impl PacketCipher {
     /// Returns the total bytes written.
     /// Buffer should be cleared before calling.
     #[inline]
-    pub fn encrypt_into(&mut self, plaintext: &[u8], output: &mut Vec<u8>) -> Result<usize> {
+    pub fn encrypt_into(&mut self, plaintext: &[u8], ad_prefix: &[u8], output: &mut Vec<u8>) -> Result<usize> {
         self.tx_counter = self.tx_counter.checked_add(1)
             .ok_or(CryptoError::EncryptionFailed("packet counter overflow"))?;
 
         let pid_bytes = self.tx_counter.to_be_bytes();
         let nonce = self.build_nonce(&pid_bytes);
 
-        let ct_tag = self.cipher.encrypt(&nonce, plaintext, &pid_bytes)?;
+        // Build full AAD: [ad_prefix] [pid(4)]
+        let mut aad = Vec::with_capacity(ad_prefix.len() + PACKET_ID_SIZE);
+        aad.extend_from_slice(ad_prefix);
+        aad.extend_from_slice(&pid_bytes);
 
-        let ct_len = ct_tag.len() - CipherSuite::TAG_SIZE;
-        let tag = &ct_tag[ct_len..];
-        let ct = &ct_tag[..ct_len];
+        let ct_tag = self.cipher.encrypt(&nonce, plaintext, &aad)?;
 
-        let total = PACKET_ID_SIZE + CipherSuite::TAG_SIZE + ct_len;
+        let total = PACKET_ID_SIZE + ct_tag.len();
         output.extend_from_slice(&pid_bytes);
-        output.extend_from_slice(tag);
-        output.extend_from_slice(ct);
+        output.extend_from_slice(&ct_tag);
 
         Ok(total)
     }
 
     /// Decrypt a packet with replay protection (OpenVPN AEAD format).
     ///
-    /// Expects: [packet_id(4)] [AEAD_tag(16)] [ciphertext]
+    /// `ad_prefix` is the header bytes (opcode + peer_id for V2) that precede
+    /// the packet ID in the on-wire format. OpenVPN authenticates these as part
+    /// of the AEAD AAD: AAD = [ad_prefix] [packet_id(4)].
+    ///
+    /// Supports both tag-at-end and tag-before-ciphertext formats:
+    /// - Tag-at-end (OpenVPN 2.6+): [pid(4)] [ciphertext] [tag(16)]
+    /// - Tag-before (legacy):       [pid(4)] [tag(16)] [ciphertext]
+    ///
+    /// Tries tag-at-end first, falls back to tag-before if decryption fails.
     #[inline]
-    pub fn decrypt(&mut self, packet: &[u8]) -> Result<Vec<u8>> {
+    pub fn decrypt(&mut self, packet: &[u8], ad_prefix: &[u8]) -> Result<Vec<u8>> {
         const MIN_PACKET_SIZE: usize = PACKET_ID_SIZE + CipherSuite::TAG_SIZE;
 
         if packet.len() < MIN_PACKET_SIZE {
@@ -344,18 +360,27 @@ impl PacketCipher {
 
         let nonce = self.build_nonce(&pid_bytes);
 
-        // OpenVPN format: [pid(4)][tag(16)][ciphertext]
-        // AEAD library expects: [ciphertext][tag]
+        // Build full AAD: [ad_prefix] [pid(4)]
+        let mut aad = Vec::with_capacity(ad_prefix.len() + PACKET_ID_SIZE);
+        aad.extend_from_slice(ad_prefix);
+        aad.extend_from_slice(&pid_bytes);
+
+        // Try tag-at-end first: [pid(4)] [ciphertext||tag]
+        // The AEAD library expects ciphertext||tag, which is exactly packet[4..]
+        let ct_tag = &packet[PACKET_ID_SIZE..];
+        if let Ok(plaintext) = self.cipher.decrypt(&nonce, ct_tag, &aad) {
+            return Ok(plaintext);
+        }
+
+        // Fall back to tag-before: [pid(4)] [tag(16)] [ciphertext]
+        // Reassemble as ciphertext||tag for the AEAD library
         let tag = &packet[PACKET_ID_SIZE..PACKET_ID_SIZE + CipherSuite::TAG_SIZE];
         let ct = &packet[PACKET_ID_SIZE + CipherSuite::TAG_SIZE..];
+        let mut ct_tag_reordered = Vec::with_capacity(ct.len() + CipherSuite::TAG_SIZE);
+        ct_tag_reordered.extend_from_slice(ct);
+        ct_tag_reordered.extend_from_slice(tag);
 
-        // Reassemble as ciphertext || tag for the AEAD library
-        let mut ct_tag = Vec::with_capacity(ct.len() + CipherSuite::TAG_SIZE);
-        ct_tag.extend_from_slice(ct);
-        ct_tag.extend_from_slice(tag);
-
-        // Decrypt with AAD = packet_id bytes
-        self.cipher.decrypt(&nonce, &ct_tag, &pid_bytes)
+        self.cipher.decrypt(&nonce, &ct_tag_reordered, &aad)
     }
 
     /// Get current TX counter (for debugging/stats)
@@ -489,23 +514,25 @@ mod tests {
         let key2 = DataChannelKey::new_with_iv([0x42u8; 32], iv, CipherSuite::ChaCha20Poly1305);
         let mut decryptor = PacketCipher::new(key2);
 
+        let ad = &[0x48u8, 0x00, 0x00, 0x01]; // V2 header: opcode + peer_id
+
         // Encrypt some packets
-        let p1 = encryptor.encrypt(b"packet 1").unwrap();
-        let p2 = encryptor.encrypt(b"packet 2").unwrap();
-        let p3 = encryptor.encrypt(b"packet 3").unwrap();
+        let p1 = encryptor.encrypt(b"packet 1", ad).unwrap();
+        let p2 = encryptor.encrypt(b"packet 2", ad).unwrap();
+        let p3 = encryptor.encrypt(b"packet 3", ad).unwrap();
 
         // Decrypt in order - should work
-        assert!(decryptor.decrypt(&p1).is_ok());
-        assert!(decryptor.decrypt(&p2).is_ok());
+        assert!(decryptor.decrypt(&p1, ad).is_ok());
+        assert!(decryptor.decrypt(&p2, ad).is_ok());
 
         // Replay p1 - should fail
-        assert!(decryptor.decrypt(&p1).is_err());
+        assert!(decryptor.decrypt(&p1, ad).is_err());
 
         // p3 out of order - should work
-        assert!(decryptor.decrypt(&p3).is_ok());
+        assert!(decryptor.decrypt(&p3, ad).is_ok());
 
         // Replay p3 - should fail
-        assert!(decryptor.decrypt(&p3).is_err());
+        assert!(decryptor.decrypt(&p3, ad).is_err());
     }
 
     #[test]

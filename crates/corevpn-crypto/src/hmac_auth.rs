@@ -42,43 +42,55 @@ impl HmacAuth {
 
     /// Create from OpenVPN ta.key format (2048-bit / 256 bytes)
     ///
-    /// OpenVPN ta.key contains 4 keys:
-    /// - Bytes 0-63: Client HMAC key (encrypt direction)
-    /// - Bytes 64-127: Server HMAC key (encrypt direction)
-    /// - Bytes 128-191: Client HMAC key (decrypt direction)
-    /// - Bytes 192-255: Server HMAC key (decrypt direction)
+    /// OpenVPN ta.key maps to the key2 struct layout:
+    ///   struct key { uint8_t cipher[64]; uint8_t hmac[64]; };
+    ///   struct key2 { int n; struct key keys[2]; };
+    ///
+    /// Layout:
+    /// - Bytes   0-63:  keys[0].cipher (unused for tls-auth)
+    /// - Bytes  64-127: keys[0].hmac   (HMAC key for key-direction 0)
+    /// - Bytes 128-191: keys[1].cipher (unused for tls-auth)
+    /// - Bytes 192-255: keys[1].hmac   (HMAC key for key-direction 1)
+    ///
+    /// Key direction determines which key index is used for encrypt/decrypt:
+    /// - key_direction 0: encrypt with keys[0], decrypt with keys[1]
+    /// - key_direction 1: encrypt with keys[1], decrypt with keys[0]
     pub fn from_ta_key(ta_key: &[u8; 256], is_server: bool, key_direction: Option<u8>) -> Result<Self> {
         let (tx_key, rx_key) = match (is_server, key_direction) {
-            // Server with key-direction 0 (normal)
+            // Server with key-direction 0 (normal/default)
+            // encrypt with keys[0].hmac, decrypt with keys[1].hmac
             (true, Some(0)) | (true, None) => {
                 let mut tx = [0u8; 32];
                 let mut rx = [0u8; 32];
-                tx.copy_from_slice(&ta_key[64..96]);
-                rx.copy_from_slice(&ta_key[0..32]);
+                tx.copy_from_slice(&ta_key[64..96]);    // keys[0].hmac
+                rx.copy_from_slice(&ta_key[192..224]);   // keys[1].hmac
                 (tx, rx)
             }
             // Server with key-direction 1 (reversed)
+            // encrypt with keys[1].hmac, decrypt with keys[0].hmac
             (true, Some(1)) => {
                 let mut tx = [0u8; 32];
                 let mut rx = [0u8; 32];
-                tx.copy_from_slice(&ta_key[0..32]);
-                rx.copy_from_slice(&ta_key[64..96]);
+                tx.copy_from_slice(&ta_key[192..224]);   // keys[1].hmac
+                rx.copy_from_slice(&ta_key[64..96]);     // keys[0].hmac
                 (tx, rx)
             }
             // Client with key-direction 1 (normal for client)
+            // encrypt with keys[1].hmac, decrypt with keys[0].hmac
             (false, Some(1)) | (false, None) => {
                 let mut tx = [0u8; 32];
                 let mut rx = [0u8; 32];
-                tx.copy_from_slice(&ta_key[0..32]);
-                rx.copy_from_slice(&ta_key[64..96]);
+                tx.copy_from_slice(&ta_key[192..224]);   // keys[1].hmac
+                rx.copy_from_slice(&ta_key[64..96]);     // keys[0].hmac
                 (tx, rx)
             }
             // Client with key-direction 0 (reversed for client)
+            // encrypt with keys[0].hmac, decrypt with keys[1].hmac
             (false, Some(0)) => {
                 let mut tx = [0u8; 32];
                 let mut rx = [0u8; 32];
-                tx.copy_from_slice(&ta_key[64..96]);
-                rx.copy_from_slice(&ta_key[0..32]);
+                tx.copy_from_slice(&ta_key[64..96]);     // keys[0].hmac
+                rx.copy_from_slice(&ta_key[192..224]);   // keys[1].hmac
                 (tx, rx)
             }
             _ => {

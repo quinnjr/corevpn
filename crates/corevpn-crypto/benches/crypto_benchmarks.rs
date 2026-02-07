@@ -108,8 +108,9 @@ fn bench_packet_cipher(c: &mut Criterion) {
                 |b, _| {
                     let key = DataChannelKey::new([0x42u8; 32], suite);
                     let mut cipher = PacketCipher::new(key);
+                    let ad = &[0x48u8, 0x00, 0x00, 0x01];
                     b.iter(|| {
-                        cipher.encrypt(black_box(&plaintext))
+                        cipher.encrypt(black_box(&plaintext), black_box(ad))
                     });
                 },
             );
@@ -122,9 +123,10 @@ fn bench_packet_cipher(c: &mut Criterion) {
                     let key = DataChannelKey::new([0x42u8; 32], suite);
                     let mut encryptor = PacketCipher::new(key);
                     
+                    let ad = &[0x48u8, 0x00, 0x00, 0x01];
                     // Pre-encrypt packets
                     let packets: Vec<_> = (0..1000)
-                        .map(|_| encryptor.encrypt(&plaintext).unwrap())
+                        .map(|_| encryptor.encrypt(&plaintext, ad).unwrap())
                         .collect();
                     
                     let key2 = DataChannelKey::new([0x42u8; 32], suite);
@@ -132,7 +134,7 @@ fn bench_packet_cipher(c: &mut Criterion) {
                     let mut idx = 0;
                     
                     b.iter(|| {
-                        let result = decryptor.decrypt(black_box(&packets[idx]));
+                        let result = decryptor.decrypt(black_box(&packets[idx]), black_box(ad));
                         idx = (idx + 1) % packets.len();
                         result
                     });

@@ -96,18 +96,11 @@ impl KeyMaterial {
         material
     }
 
-    /// Create key material from an OpenVPN PRF key block for AEAD ciphers.
+    /// Create key material from an OpenVPN PRF key block for AEAD ciphers (LEGACY - packed layout).
     ///
-    /// OpenVPN reads the key block sequentially using cipher_kl and iv_kl strides.
-    /// Key direction: key[0] = server encrypt (server→client), key[1] = client encrypt (client→server).
-    ///
-    /// Key block layout (88 bytes minimum):
-    /// - bytes 0..32:  key[0].cipher = server encrypt key
-    /// - bytes 32..44: key[0].iv    = server encrypt implicit IV (12 bytes)
-    /// - bytes 44..76: key[1].cipher = client encrypt key
-    /// - bytes 76..88: key[1].iv    = client encrypt implicit IV (12 bytes)
-    ///
-    /// The implicit IVs are XORed with the per-packet counter to form the AEAD nonce.
+    /// **WARNING**: This uses a packed 88-byte layout which does NOT match the actual
+    /// OpenVPN key2 struct layout. Use `from_openvpn_key2_block` instead.
+    #[allow(dead_code)]
     pub fn from_openvpn_aead_key_block(block: &[u8]) -> Self {
         assert!(block.len() >= 88, "AEAD key block must be at least 88 bytes");
         let mut material = Self {
@@ -118,12 +111,54 @@ impl KeyMaterial {
             client_implicit_iv: [0u8; 12],
             server_implicit_iv: [0u8; 12],
         };
-        // key[0] = server encrypt direction (server→client)
-        material.server_write_key.copy_from_slice(&block[0..32]);
-        material.server_implicit_iv.copy_from_slice(&block[32..44]);
-        // key[1] = client encrypt direction (client→server)
-        material.client_write_key.copy_from_slice(&block[44..76]);
-        material.client_implicit_iv.copy_from_slice(&block[76..88]);
+        material.client_write_key.copy_from_slice(&block[0..32]);
+        material.client_implicit_iv.copy_from_slice(&block[32..44]);
+        material.server_write_key.copy_from_slice(&block[44..76]);
+        material.server_implicit_iv.copy_from_slice(&block[76..88]);
+        material
+    }
+
+    /// Create key material from an OpenVPN PRF key2 struct block for AEAD ciphers.
+    ///
+    /// OpenVPN's PRF outputs 256 bytes directly into the key2.keys struct:
+    ///   struct key { uint8_t cipher[64]; uint8_t hmac[64]; };
+    ///   struct key2 { int n; struct key keys[2]; };
+    ///
+    /// Layout (256 bytes):
+    /// - bytes   0..64:   key[0].cipher (first 32 used as cipher key)
+    /// - bytes  64..128:  key[0].hmac   (first 8 used as implicit IV for AEAD)
+    /// - bytes 128..192:  key[1].cipher (first 32 used as cipher key)
+    /// - bytes 192..256:  key[1].hmac   (first 8 used as implicit IV for AEAD)
+    ///
+    /// Key direction (determined by init_key_ctx_bi with KEY_DIRECTION):
+    /// - key[0] = client encrypt / server decrypt (client→server direction)
+    /// - key[1] = server encrypt / client decrypt (server→client direction)
+    ///
+    /// OpenVPN non-epoch AEAD implicit IV layout (12 bytes):
+    ///   [0..4] = 0x00000000  (the packet-id is placed here in the nonce, NOT XORed)
+    ///   [4..12] = hmac[0..8] (XORed with zero padding in the nonce)
+    ///
+    /// The nonce = [packet_id(4) || implicit_iv[4..12]] because OpenVPN XORs:
+    ///   iv[i] ^= implicit_iv[i], where iv starts as [pid(4), 0(8)].
+    /// Since implicit_iv[0..4] = 0, the first 4 bytes are just the raw packet_id.
+    pub fn from_openvpn_key2_block(block: &[u8]) -> Self {
+        assert!(block.len() >= 256, "key2 block must be at least 256 bytes");
+        let mut material = Self {
+            client_write_key: [0u8; 32],
+            server_write_key: [0u8; 32],
+            client_hmac_key: [0u8; 32],
+            server_hmac_key: [0u8; 32],
+            client_implicit_iv: [0u8; 12],
+            server_implicit_iv: [0u8; 12],
+        };
+        // key[0] = client encrypt direction (client→server)
+        material.client_write_key.copy_from_slice(&block[0..32]);
+        // OpenVPN non-epoch format: implicit_iv[0..4] = 0, implicit_iv[4..12] = hmac[0..8]
+        // (see key_ctx_update_implicit_iv in OpenVPN crypto.c)
+        material.client_implicit_iv[4..12].copy_from_slice(&block[64..72]);
+        // key[1] = server encrypt direction (server→client)
+        material.server_write_key.copy_from_slice(&block[128..160]);
+        material.server_implicit_iv[4..12].copy_from_slice(&block[192..200]);
         material
     }
 

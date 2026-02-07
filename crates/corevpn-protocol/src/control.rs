@@ -62,6 +62,8 @@ pub struct PushReply {
     pub dns_search: Vec<String>,
     /// Redirect gateway (full tunnel)
     pub redirect_gateway: bool,
+    /// Route gateway (VPN gateway IP for redirect-gateway)
+    pub route_gateway: Option<String>,
     /// Topology type
     pub topology: Topology,
     /// Ping interval
@@ -81,6 +83,7 @@ impl Default for PushReply {
             dns: vec![],
             dns_search: vec![],
             redirect_gateway: false,
+            route_gateway: None,
             topology: Topology::Subnet,
             ping: 10,
             ping_restart: 60,
@@ -110,6 +113,11 @@ impl PushReply {
         // Routes
         for route in &self.routes {
             parts.push(route.encode());
+        }
+
+        // Route gateway (must come before redirect-gateway)
+        if let Some(gw) = &self.route_gateway {
+            parts.push(format!("route-gateway {}", gw));
         }
 
         // Redirect gateway
@@ -172,6 +180,11 @@ impl PushReply {
                 Some("route") => {
                     if let Ok(route) = PushRoute::parse(part) {
                         reply.routes.push(route);
+                    }
+                }
+                Some("route-gateway") => {
+                    if let Some(gw) = tokens.next() {
+                        reply.route_gateway = Some(gw.to_string());
                     }
                 }
                 Some("redirect-gateway") => {

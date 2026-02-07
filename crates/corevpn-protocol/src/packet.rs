@@ -68,13 +68,27 @@ impl PacketHeader {
         }
 
         // Control packets have more header fields
+        // OpenVPN wire format: [opcode(1)] [session_id(8)] [HMAC(32)] [pid(4)] [time(4)] [rest...]
+        // Session ID always comes right after opcode, BEFORE tls-auth fields
         let mut offset = 1;
         let mut hmac = None;
         let mut packet_id = None;
         let mut timestamp = None;
 
-        // Parse HMAC if tls-auth is enabled
+        // Session ID (8 bytes) - always right after opcode
+        if data.len() < offset + 8 {
+            return Err(ProtocolError::PacketTooShort {
+                expected: offset + 8,
+                got: data.len(),
+            });
+        }
+        let mut session_id = [0u8; 8];
+        session_id.copy_from_slice(&data[offset..offset + 8]);
+        offset += 8;
+
+        // Parse HMAC + replay packet ID if tls-auth is enabled
         if has_tls_auth {
+            // HMAC (32 bytes for SHA256)
             if data.len() < offset + 32 {
                 return Err(ProtocolError::PacketTooShort {
                     expected: offset + 32,
@@ -107,17 +121,6 @@ impl PacketHeader {
             offset += 4;
         }
 
-        // Session ID (8 bytes)
-        if data.len() < offset + 8 {
-            return Err(ProtocolError::PacketTooShort {
-                expected: offset + 8,
-                got: data.len(),
-            });
-        }
-        let mut session_id = [0u8; 8];
-        session_id.copy_from_slice(&data[offset..offset + 8]);
-        offset += 8;
-
         Ok((
             Self {
                 opcode,
@@ -132,9 +135,15 @@ impl PacketHeader {
     }
 
     /// Serialize header to bytes
+    /// Wire format: [opcode(1)] [session_id(8)] [HMAC(32)] [pid(4)] [time(4)] [rest...]
     #[inline]
     pub fn serialize(&self, buf: &mut BytesMut) {
         buf.put_u8(self.opcode.to_byte(self.key_id));
+
+        // Session ID comes right after opcode (before tls-auth fields)
+        if let Some(session_id) = &self.session_id {
+            buf.put_slice(session_id);
+        }
 
         if let Some(hmac) = &self.hmac {
             buf.put_slice(hmac);
@@ -146,10 +155,6 @@ impl PacketHeader {
 
         if let Some(timestamp) = self.timestamp {
             buf.put_u32(timestamp);
-        }
-
-        if let Some(session_id) = &self.session_id {
-            buf.put_slice(session_id);
         }
     }
 }

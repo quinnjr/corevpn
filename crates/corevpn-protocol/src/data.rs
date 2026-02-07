@@ -101,6 +101,8 @@ pub struct DataChannel {
     decrypt_cipher: PacketCipher,
     /// Whether to use V2 protocol
     use_v2: bool,
+    /// Cached AAD prefix for encryption (opcode + peer_id header bytes)
+    encrypt_ad_prefix: Vec<u8>,
 }
 
 impl DataChannel {
@@ -112,12 +114,28 @@ impl DataChannel {
         use_v2: bool,
         peer_id: Option<u32>,
     ) -> Self {
+        // Build the AAD prefix for encryption (header bytes that precede the packet ID).
+        // OpenVPN's encrypt_sign() in forward.c:
+        //   - P_DATA_V2: header (opcode+peer_id) is prepended to work buffer BEFORE
+        //     openvpn_encrypt(), so AAD = [opcode(1)][peer_id(3)][packet_id(4)]
+        //   - P_DATA_V1: opcode is prepended AFTER encryption (tls_prepend_opcode_v1),
+        //     so AAD = [packet_id(4)] only (no opcode in AAD!)
+        let encrypt_ad_prefix = if use_v2 {
+            let opcode_byte = OpCode::DataV2.to_byte(key_id);
+            let pid = peer_id.unwrap_or(0);
+            vec![opcode_byte, (pid >> 16) as u8, (pid >> 8) as u8, pid as u8]
+        } else {
+            // V1: no header bytes in AAD, just the packet ID (added by PacketCipher)
+            vec![]
+        };
+
         Self {
             key_id,
             peer_id,
             encrypt_cipher: PacketCipher::new(encrypt_key),
             decrypt_cipher: PacketCipher::new(decrypt_key),
             use_v2,
+            encrypt_ad_prefix,
         }
     }
 
@@ -126,9 +144,21 @@ impl DataChannel {
         self.key_id
     }
 
+    /// Build AAD prefix from a received packet's header bytes.
+    /// For V2: [opcode_byte(1)] [peer_id(3)]; for V1: empty (no header in AAD)
+    fn decrypt_ad_prefix(&self, packet: &DataPacket) -> Vec<u8> {
+        if let Some(pid) = packet.peer_id {
+            let opcode_byte = OpCode::DataV2.to_byte(packet.key_id);
+            vec![opcode_byte, (pid >> 16) as u8, (pid >> 8) as u8, pid as u8]
+        } else {
+            // V1: no header bytes in AAD (opcode is added after encryption by OpenVPN)
+            vec![]
+        }
+    }
+
     /// Encrypt an IP packet for transmission
     pub fn encrypt(&mut self, ip_packet: &[u8]) -> Result<DataPacket> {
-        let encrypted = self.encrypt_cipher.encrypt(ip_packet)?;
+        let encrypted = self.encrypt_cipher.encrypt(ip_packet, &self.encrypt_ad_prefix)?;
 
         Ok(DataPacket {
             key_id: self.key_id,
@@ -143,7 +173,8 @@ impl DataChannel {
             return Err(ProtocolError::KeyNotAvailable(packet.key_id.0));
         }
 
-        let decrypted = self.decrypt_cipher.decrypt(&packet.payload)?;
+        let ad_prefix = self.decrypt_ad_prefix(packet);
+        let decrypted = self.decrypt_cipher.decrypt(&packet.payload, &ad_prefix)?;
         Ok(Bytes::from(decrypted))
     }
 }

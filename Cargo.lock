@@ -5771,10 +5771,15 @@ version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0adb9992bbd5ca76f3847ed579ad4ee8defb2ec2eea918cceef17ccc66fa4fd4"
 dependencies = [
+ "byteorder",
+ "bytes",
+ "futures-core",
  "ioctl-sys",
  "libc",
  "log",
  "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
  "wintun",
 ]
 
