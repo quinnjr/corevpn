@@ -286,17 +286,17 @@ impl PacketCipher {
         nonce
     }
 
-    /// Encrypt a packet (OpenVPN AEAD tag-at-end format).
+    /// Encrypt a packet (OpenVPN AEAD tag-before-ciphertext format).
     ///
     /// `ad_prefix` is the header bytes (opcode + peer_id for V2) that precede
     /// the packet ID in the on-wire format. OpenVPN authenticates these as part
     /// of the AEAD AAD: AAD = [ad_prefix] [packet_id(4)].
     ///
-    /// Returns: [packet_id(4)] [ciphertext] [AEAD_tag(16)]
+    /// Returns: [packet_id(4)] [AEAD_tag(16)] [ciphertext]
     ///
-    /// OpenVPN 2.6+ uses AEAD tag at the end by default for AEAD ciphers.
-    /// The AEAD library naturally produces ciphertext||tag, so this is the
-    /// standard format: [pid(4)] [ciphertext||tag].
+    /// OpenVPN non-epoch AEAD format places the tag before the ciphertext:
+    ///   [packet_id(4)] [tag(16)] [ciphertext]
+    /// The AEAD library produces ciphertext||tag, so we reorder to tag||ciphertext.
     #[inline]
     pub fn encrypt(&mut self, plaintext: &[u8], ad_prefix: &[u8]) -> Result<Vec<u8>> {
         self.tx_counter = self.tx_counter.checked_add(1)
@@ -313,10 +313,17 @@ impl PacketCipher {
         // AEAD encrypt: produces ciphertext || tag (standard AEAD output)
         let ct_tag = self.cipher.encrypt(&nonce, plaintext, &aad)?;
 
-        // Tag-at-end format: [pid(4)] [ciphertext||tag]
+        // Reorder to tag-before-ciphertext format for OpenVPN compatibility:
+        // AEAD output: [ciphertext(N)] [tag(16)]
+        // Wire format: [pid(4)] [tag(16)] [ciphertext(N)]
+        let ct_len = ct_tag.len() - CipherSuite::TAG_SIZE;
+        let ciphertext = &ct_tag[..ct_len];
+        let tag = &ct_tag[ct_len..];
+
         let mut output = Vec::with_capacity(PACKET_ID_SIZE + ct_tag.len());
         output.extend_from_slice(&pid_bytes);
-        output.extend_from_slice(&ct_tag);
+        output.extend_from_slice(tag);
+        output.extend_from_slice(ciphertext);
 
         Ok(output)
     }
@@ -340,9 +347,15 @@ impl PacketCipher {
 
         let ct_tag = self.cipher.encrypt(&nonce, plaintext, &aad)?;
 
+        // Reorder to tag-before-ciphertext format
+        let ct_len = ct_tag.len() - CipherSuite::TAG_SIZE;
+        let ciphertext = &ct_tag[..ct_len];
+        let tag = &ct_tag[ct_len..];
+
         let total = PACKET_ID_SIZE + ct_tag.len();
         output.extend_from_slice(&pid_bytes);
-        output.extend_from_slice(&ct_tag);
+        output.extend_from_slice(tag);
+        output.extend_from_slice(ciphertext);
 
         Ok(total)
     }
