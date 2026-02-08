@@ -649,13 +649,24 @@ async fn handle_control_packet(
         match result {
             ProcessedPacket::TlsData(records) => {
                 info!("Received {} TLS record(s) from {} (total {} bytes)", records.len(), peer_addr, records.iter().map(|r| r.len()).sum::<usize>());
+                for (i, rec) in records.iter().enumerate() {
+                    if rec.len() >= 5 {
+                        let content_type = rec[0];
+                        let tls_version = u16::from_be_bytes([rec[1], rec[2]]);
+                        let record_len = u16::from_be_bytes([rec[3], rec[4]]);
+                        debug!("  TLS record[{}]: content_type={} version=0x{:04x} len={} raw_len={}",
+                            i, content_type, tls_version, record_len, rec.len());
+                    } else {
+                        debug!("  TLS record[{}]: too short ({} bytes)", i, rec.len());
+                    }
+                }
 
                 // Pass TLS records to TLS handler
                 if let Some(ref mut tls) = conn.tls {
                     debug!("Feeding {} TLS record(s) to TLS handler for {}", records.len(), peer_addr);
                     tls.process_tls_records(records)
                         .map_err(|e| {
-                            warn!("TLS processing failed for {}: {}", peer_addr, e);
+                            error!("TLS processing failed for {}: {} -- this may indicate a tls-auth mismatch or certificate issue", peer_addr, e);
                             anyhow::anyhow!("TLS processing failed: {}", e)
                         })?;
 
@@ -686,8 +697,14 @@ async fn handle_control_packet(
 
                         // Read client's key_method_v2 from TLS plaintext
                         let mut buf = vec![0u8; 4096];
-                        if let Ok(n) = tls.read_plaintext(&mut buf) {
-                            if n > 0 {
+                        match tls.read_plaintext(&mut buf) {
+                            Err(e) => {
+                                warn!("Failed to read TLS plaintext (key_method_v2) from {}: {}", peer_addr, e);
+                            }
+                            Ok(0) => {
+                                debug!("TLS handshake complete but no key_method_v2 data yet from {}", peer_addr);
+                            }
+                            Ok(n) => {
                                 debug!("Received {} bytes of key_method_v2 from {}", n, peer_addr);
 
                                 // Parse client's key_method_v2
@@ -807,9 +824,19 @@ async fn handle_control_packet(
                                             debug!("PRF master_secret[..8]={:02x?}", &master_secret[..8]);
 
                                             // Step 2: expand into key block (256 bytes = key2 struct)
-                                            let mut seed2 = Vec::with_capacity(64);
+                                            // OpenVPN includes session IDs in the key expansion seed:
+                                            //   seed = client_random2 || server_random2 || client_sid(8) || server_sid(8)
+                                            // (see openvpn_PRF in ssl.c: client_sid and server_sid are appended)
+                                            let client_sid = conn.protocol.remote_session_id()
+                                                .copied().unwrap_or([0u8; 8]);
+                                            let server_sid = *conn.protocol.local_session_id();
+                                            let mut seed2 = Vec::with_capacity(64 + 16);
                                             seed2.extend_from_slice(&client_km.random2);
                                             seed2.extend_from_slice(&server_random2);
+                                            seed2.extend_from_slice(&client_sid);
+                                            seed2.extend_from_slice(&server_sid);
+                                            debug!("PRF key expansion seed includes client_sid={:02x?} server_sid={:02x?}",
+                                                &client_sid, &server_sid);
                                             let key_block = corevpn_crypto::openvpn_prf(
                                                 &master_secret,
                                                 b"OpenVPN key expansion",

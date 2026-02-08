@@ -268,20 +268,21 @@ impl PacketCipher {
 
     /// Build a 12-byte AEAD nonce from implicit IV and packet ID.
     ///
-    /// OpenVPN 2.x AEAD nonce construction (see openvpn_encrypt_aead in crypto.c):
-    ///   nonce[0..4]  = packet_id (big-endian, 4 bytes)
-    ///   nonce[4..12] = implicit_iv[4..12] (tail 8 bytes of the 12-byte implicit IV)
+    /// OpenVPN AEAD nonce construction (see openvpn_encrypt_aead in crypto.c):
     ///
-    /// OpenVPN stores only 8 bytes of implicit IV (hmac_key[4..12] via
-    /// key_ctx_update_implicit_iv), but corevpn stores all 12 bytes of hmac[0..12].
-    /// We use implicit_iv[4..12] here to match OpenVPN's behavior: the first 4
-    /// bytes of the hmac key occupy the "packet ID slot" and are replaced, not
-    /// XOR'd, by the packet ID on each packet.
+    /// 1. Start with iv[0..12] = [packet_id_be(4), 0, 0, 0, 0, 0, 0, 0, 0]
+    /// 2. XOR the entire 12-byte iv with implicit_iv[0..12]:
+    ///      for i in 0..12: iv[i] ^= implicit_iv[i]
+    ///
+    /// Result: nonce[0..4] = packet_id XOR implicit_iv[0..4]
+    ///         nonce[4..12] = implicit_iv[4..12]
     #[inline(always)]
     fn build_nonce(&self, pid_bytes: &[u8; 4]) -> [u8; 12] {
-        let mut nonce = [0u8; 12];
-        nonce[0..4].copy_from_slice(pid_bytes);
-        nonce[4..12].copy_from_slice(&self.implicit_iv[4..12]);
+        let mut nonce = self.implicit_iv;
+        nonce[0] ^= pid_bytes[0];
+        nonce[1] ^= pid_bytes[1];
+        nonce[2] ^= pid_bytes[2];
+        nonce[3] ^= pid_bytes[3];
         nonce
     }
 

@@ -130,24 +130,24 @@ impl KeyMaterial {
     /// - bytes 128..192:  key[1].cipher (first 32 used as cipher key)
     /// - bytes 192..256:  key[1].hmac   (first 12 used as implicit IV for AEAD)
     ///
-    /// Key direction mapping (OpenVPN init_key_ctx_bi with KEY_DIRECTION):
-    ///   encrypt = keys[(d+0)&1], decrypt = keys[(d+1)&1]
-    ///
-    /// Client uses keydir=1: encrypt=key[1], decrypt=key[0]
-    /// Server uses keydir=0: encrypt=key[0], decrypt=key[1]
+    /// Key direction mapping (OpenVPN key_direction_state_init):
+    ///   KEY_DIRECTION_NORMAL (client):  out_key=0, in_key=1
+    ///   KEY_DIRECTION_INVERSE (server): out_key=1, in_key=0
     ///
     /// Therefore:
-    /// - key[0] = server encrypt / client decrypt (server→client direction)
-    /// - key[1] = client encrypt / server decrypt (client→server direction)
+    /// - key[0] = client encrypt / server decrypt (client→server direction)
+    /// - key[1] = server encrypt / client decrypt (server→client direction)
     ///
-    /// OpenVPN AEAD implicit IV (stored as 12 bytes, bytes 4..12 used as nonce tail):
-    ///   implicit_iv = hmac_key[0..12]  (see key_ctx_update_implicit_iv in crypto.c)
+    /// OpenVPN AEAD implicit IV (from key_ctx_update_implicit_iv in crypto.c):
+    ///   For non-epoch keys:
+    ///     impl_iv_len = cipher_iv_length - sizeof(packet_id_type) = 12 - 4 = 8 bytes
+    ///     impl_iv_offset = sizeof(packet_id_type) = 4
+    ///     implicit_iv = [0, 0, 0, 0, hmac[0..8]]
     ///
-    /// Nonce construction (see openvpn_encrypt_aead in crypto.c):
-    ///   nonce = [packet_id_be(4)] || [implicit_iv[4..12]]
-    ///   OpenVPN's key_ctx_update_implicit_iv stores hmac_key[4..12] as its
-    ///   8-byte implicit IV. We store all 12 bytes (hmac[0..12]) and use
-    ///   bytes 4..12 when building the nonce, matching OpenVPN's behavior.
+    /// Nonce construction (openvpn_encrypt_aead in crypto.c):
+    ///   iv[0..12] = [packet_id_be(4), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    ///   for i in 0..12: iv[i] ^= implicit_iv[i]
+    ///   Result: [pid(4), hmac[0..8]] (concatenation, since XOR with 0 is identity)
     pub fn from_openvpn_key2_block(block: &[u8]) -> Self {
         assert!(block.len() >= 256, "key2 block must be at least 256 bytes");
         let mut material = Self {
@@ -158,13 +158,17 @@ impl KeyMaterial {
             client_implicit_iv: [0u8; 12],
             server_implicit_iv: [0u8; 12],
         };
-        // key[0] = server encrypt / client decrypt (server→client)
-        material.server_write_key.copy_from_slice(&block[0..32]);
-        // implicit_iv = hmac[0..12] (OpenVPN copies full 12 bytes from hmac key)
-        material.server_implicit_iv.copy_from_slice(&block[64..76]);
-        // key[1] = client encrypt / server decrypt (client→server)
-        material.client_write_key.copy_from_slice(&block[128..160]);
-        material.client_implicit_iv.copy_from_slice(&block[192..204]);
+        // key[0] = client encrypt / server decrypt (client→server)
+        material.client_write_key.copy_from_slice(&block[0..32]);
+        // Implicit IV at offset 4: first 8 bytes of hmac key placed at nonce[4..12]
+        // This matches OpenVPN's key_ctx_update_implicit_iv which uses:
+        //   impl_iv_offset = sizeof(packet_id_type) = 4
+        //   memcpy(implicit_iv + impl_iv_offset, key->hmac, impl_iv_len)
+        // Result: implicit_iv = [0, 0, 0, 0, hmac[0], hmac[1], ..., hmac[7]]
+        material.client_implicit_iv[4..12].copy_from_slice(&block[64..72]);
+        // key[1] = server encrypt / client decrypt (server→client)
+        material.server_write_key.copy_from_slice(&block[128..160]);
+        material.server_implicit_iv[4..12].copy_from_slice(&block[192..200]);
         material
     }
 
@@ -192,37 +196,71 @@ pub fn derive_single_key(
     Ok(*okm)
 }
 
-/// PRF for OpenVPN TLS key expansion
+/// TLS 1.0 PRF for OpenVPN key expansion (ssl_tls1_PRF in crypto_openssl.c)
 ///
-/// Compatible with OpenVPN's PRF which uses:
-/// P_SHA256(secret, seed) = HMAC_SHA256(secret, A(1) + seed) +
-///                          HMAC_SHA256(secret, A(2) + seed) + ...
-/// where A(0) = seed, A(i) = HMAC_SHA256(secret, A(i-1))
+/// This is the standard TLS 1.0 PRF using P_MD5 XOR P_SHA-1:
+///   PRF(secret, label, seed) = P_MD5(S1, label+seed) XOR P_SHA1(S2, label+seed)
+/// where:
+///   S1 = secret[0..ceil(len/2)]
+///   S2 = secret[floor(len/2)..len]
+///   (S1 and S2 overlap by 1 byte if secret length is odd)
+///
+/// P_hash(secret, seed) = HMAC_hash(secret, A(1) + seed) +
+///                         HMAC_hash(secret, A(2) + seed) + ...
+/// where A(0) = seed, A(i) = HMAC_hash(secret, A(i-1))
 pub fn openvpn_prf(secret: &[u8], label: &[u8], seed: &[u8], output_len: usize) -> Result<Vec<u8>> {
-    use hmac::{Hmac, Mac};
+    use hmac::Hmac;
 
-    type HmacSha256 = Hmac<Sha256>;
-
-    // Combine label and seed
-    let mut combined_seed = zeroize::Zeroizing::new(Vec::with_capacity(label.len() + seed.len()));
+    // Combine label and seed (OpenVPN's openvpn_PRF concatenates label + client_seed + server_seed + sids,
+    // but our caller already provides label and seed separately)
+    let mut combined_seed = Vec::with_capacity(label.len() + seed.len());
     combined_seed.extend_from_slice(label);
     combined_seed.extend_from_slice(seed);
 
+    // Split the secret into two halves (overlapping by 1 if odd length)
+    let half = (secret.len() + 1) / 2; // ceil(len/2)
+    let s1 = &secret[..half];
+    let s2 = &secret[secret.len() / 2..]; // floor(len/2)..end
+
+    // P_MD5(S1, combined_seed)
+    let p_md5 = p_hash::<Hmac<md5::Md5>>(s1, &combined_seed, output_len)?;
+
+    // P_SHA1(S2, combined_seed)
+    let p_sha1 = p_hash::<Hmac<sha1::Sha1>>(s2, &combined_seed, output_len)?;
+
+    // XOR the two results
     let mut output = Vec::with_capacity(output_len);
-    let mut a = zeroize::Zeroizing::new(combined_seed.clone());
+    for i in 0..output_len {
+        output.push(p_md5[i] ^ p_sha1[i]);
+    }
+
+    Ok(output)
+}
+
+/// Generic P_hash function for TLS PRF
+///
+/// P_hash(secret, seed) = HMAC_hash(secret, A(1) + seed) +
+///                         HMAC_hash(secret, A(2) + seed) + ...
+/// where A(0) = seed, A(i) = HMAC_hash(secret, A(i-1))
+fn p_hash<M>(secret: &[u8], seed: &[u8], output_len: usize) -> Result<Vec<u8>>
+where
+    M: hmac::Mac + hmac::digest::KeyInit,
+{
+    let mut output = Vec::with_capacity(output_len + 64); // extra capacity for last block
+    let mut a = seed.to_vec(); // A(0) = seed
 
     while output.len() < output_len {
         // A(i) = HMAC(secret, A(i-1))
-        let mut mac = HmacSha256::new_from_slice(secret)
+        let mut mac = <M as hmac::digest::KeyInit>::new_from_slice(secret)
             .map_err(|_| CryptoError::KeyDerivationFailed("Invalid HMAC key"))?;
-        mac.update(&a);
-        *a = zeroize::Zeroizing::new(mac.finalize().into_bytes().to_vec());
+        hmac::Mac::update(&mut mac, &a);
+        a = mac.finalize().into_bytes().to_vec();
 
-        // P_hash = HMAC(secret, A(i) + seed)
-        let mut mac = HmacSha256::new_from_slice(secret)
+        // HMAC(secret, A(i) + seed)
+        let mut mac = <M as hmac::digest::KeyInit>::new_from_slice(secret)
             .map_err(|_| CryptoError::KeyDerivationFailed("Invalid HMAC key"))?;
-        mac.update(&a);
-        mac.update(&combined_seed);
+        hmac::Mac::update(&mut mac, &a);
+        hmac::Mac::update(&mut mac, seed);
         output.extend_from_slice(&mac.finalize().into_bytes());
     }
 
