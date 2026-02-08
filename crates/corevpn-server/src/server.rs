@@ -831,17 +831,15 @@ async fn handle_control_packet(
 
                                             // Step 2: expand into key block (256 bytes = key2 struct)
                                             // OpenVPN includes session IDs in the key expansion seed:
-                                            //   seed = client_seed || server_seed
-                                            //   where client_seed = client_random2(32) || client_sid(8)
-                                            //         server_seed = server_random2(32) || server_sid(8)
-                                            // (see openvpn_PRF in ssl.c and key_source2 struct)
+                                            //   seed = client_random2 || server_random2 || client_sid(8) || server_sid(8)
+                                            // (see openvpn_PRF in ssl.c: client_sid and server_sid are appended)
                                             let client_sid = conn.protocol.remote_session_id()
                                                 .copied().unwrap_or([0u8; 8]);
                                             let server_sid = *conn.protocol.local_session_id();
                                             let mut seed2 = Vec::with_capacity(64 + 16);
                                             seed2.extend_from_slice(&client_km.random2);
-                                            seed2.extend_from_slice(&client_sid);
                                             seed2.extend_from_slice(&server_random2);
+                                            seed2.extend_from_slice(&client_sid);
                                             seed2.extend_from_slice(&server_sid);
                                             debug!("PRF key expansion seed includes client_sid={:02x?} server_sid={:02x?}",
                                                 &client_sid, &server_sid);
