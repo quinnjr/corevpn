@@ -527,6 +527,12 @@ async fn handle_packet(
     let opcode = OpCode::from_byte(data[0])?;
     trace!("Received {} from {}", opcode, peer_addr);
 
+    // Debug: hex dump first bytes of every control packet
+    if opcode.is_control() {
+        let hex: String = data.iter().take(64).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+        debug!("Raw {} packet from {} ({} bytes): {}{}", opcode, peer_addr, data.len(), hex, if data.len() > 64 { "..." } else { "" });
+    }
+
     match opcode {
         OpCode::HardResetClientV2 | OpCode::HardResetClientV3 => {
             handle_hard_reset(server, socket, peer_addr, &data).await?;
