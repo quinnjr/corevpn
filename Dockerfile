@@ -32,8 +32,9 @@ COPY crates/corevpn-config ./crates/corevpn-config
 COPY crates/corevpn-server ./crates/corevpn-server
 COPY crates/corevpn-cli ./crates/corevpn-cli
 
-# Remove corevpn-ui from workspace members (it depends on local openkit)
-RUN sed -i '/"crates\/corevpn-ui"/d' Cargo.toml
+# Remove workspace members not needed for server build
+# corevpn-ui depends on local openkit, corevpn-nm depends on system D-Bus libs
+RUN sed -i '/"crates\/corevpn-ui"/d; /"crates\/corevpn-nm"/d' Cargo.toml
 
 # Build release binaries
 RUN cargo build --release -p corevpn-server -p corevpn-cli \
