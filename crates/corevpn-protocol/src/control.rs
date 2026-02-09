@@ -510,6 +510,63 @@ impl KeyMethodV2 {
         })
     }
 
+    /// Parse key method v2 data from server (received from TLS plaintext)
+    ///
+    /// The server format omits the pre_master secret, only sending:
+    /// - 4 bytes: literal 0
+    /// - 1 byte: key method (must be 2)
+    /// - 32 bytes: random1
+    /// - 32 bytes: random2
+    /// - 2 bytes + N bytes: options string (length-prefixed, null-terminated)
+    pub fn parse_from_server(data: &[u8]) -> Result<Self> {
+        // Minimum: 4 + 1 + 32 + 32 + 2 = 71 bytes
+        if data.len() < 71 {
+            return Err(ProtocolError::PacketTooShort {
+                expected: 71,
+                got: data.len(),
+            });
+        }
+
+        let mut offset = 0;
+
+        // Skip 4 bytes literal zero
+        offset += 4;
+
+        // Key method byte (must be 2)
+        let key_method = data[offset];
+        offset += 1;
+        if key_method != 2 {
+            return Err(ProtocolError::InvalidPacket(
+                format!("unsupported key method: {}", key_method),
+            ));
+        }
+
+        // Server does NOT send pre_master - only random1 and random2
+
+        // Random1 (32 bytes)
+        let mut random1 = [0u8; 32];
+        random1.copy_from_slice(&data[offset..offset + 32]);
+        offset += 32;
+
+        // Random2 (32 bytes)
+        let mut random2 = [0u8; 32];
+        random2.copy_from_slice(&data[offset..offset + 32]);
+        offset += 32;
+
+        // Options string (length-prefixed)
+        let options = Self::read_length_prefixed_string(data, &mut offset)?;
+
+        Ok(Self {
+            pre_master: [0u8; 48], // Not sent by server
+            random1,
+            random2,
+            options,
+            username: None,
+            password: None,
+            peer_info: None,
+        })
+    }
+
     /// Read a length-prefixed string from the buffer
     fn read_length_prefixed_string(data: &[u8], offset: &mut usize) -> Result<String> {
         if *offset + 2 > data.len() {

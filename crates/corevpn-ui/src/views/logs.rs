@@ -12,7 +12,7 @@ pub fn logs_view(ui: &mut egui::Ui, state: &mut AppState) {
 
     // Header with back button
     ui.horizontal(|ui| {
-        if ui.button("←").clicked() {
+        if ui.button("< Back").clicked() {
             state.current_view = AppView::Settings;
         }
         ui.heading("Connection Logs");
@@ -34,6 +34,7 @@ pub fn logs_view(ui: &mut egui::Ui, state: &mut AppState) {
             egui::ScrollArea::vertical()
                 .max_height(400.0)
                 .auto_shrink([false, false])
+                .stick_to_bottom(true)
                 .show(ui, |ui| {
                     if state.logs.is_empty() {
                         ui.label(
@@ -44,15 +45,15 @@ pub fn logs_view(ui: &mut egui::Ui, state: &mut AppState) {
                     } else {
                         for entry in &state.logs {
                             ui.horizontal(|ui| {
-                                // Timestamp
                                 ui.label(
-                                    egui::RichText::new(entry.timestamp.format("%H:%M:%S").to_string())
-                                        .size(11.0)
-                                        .color(egui::Color32::GRAY)
-                                        .monospace(),
+                                    egui::RichText::new(
+                                        entry.timestamp.format("%H:%M:%S").to_string(),
+                                    )
+                                    .size(11.0)
+                                    .color(egui::Color32::GRAY)
+                                    .monospace(),
                                 );
 
-                                // Level
                                 ui.label(
                                     egui::RichText::new(format!("[{}]", entry.level.as_str()))
                                         .size(11.0)
@@ -60,11 +61,8 @@ pub fn logs_view(ui: &mut egui::Ui, state: &mut AppState) {
                                         .monospace(),
                                 );
 
-                                // Message
                                 ui.label(
-                                    egui::RichText::new(&entry.message)
-                                        .size(12.0)
-                                        .monospace(),
+                                    egui::RichText::new(&entry.message).size(12.0).monospace(),
                                 );
                             });
                         }
@@ -76,16 +74,10 @@ pub fn logs_view(ui: &mut egui::Ui, state: &mut AppState) {
 
     // Log level legend
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("●").color(LogLevel::Debug.color()));
-        ui.label(egui::RichText::new("Debug").size(11.0));
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("●").color(LogLevel::Info.color()));
-        ui.label(egui::RichText::new("Info").size(11.0));
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("●").color(LogLevel::Warn.color()));
-        ui.label(egui::RichText::new("Warn").size(11.0));
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("●").color(LogLevel::Error.color()));
-        ui.label(egui::RichText::new("Error").size(11.0));
+        for level in [LogLevel::Debug, LogLevel::Info, LogLevel::Warn, LogLevel::Error] {
+            ui.label(egui::RichText::new("*").color(level.color()));
+            ui.label(egui::RichText::new(level.as_str()).size(11.0));
+            ui.add_space(8.0);
+        }
     });
 }

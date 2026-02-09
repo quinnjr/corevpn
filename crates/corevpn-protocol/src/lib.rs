@@ -22,4 +22,4 @@ pub use control::{ControlPacket, ControlMessage, KeyMethodV2, PushReply, PushRou
 pub use data::{DataPacket, DataChannel};
 pub use reliable::{ReliableTransport, ReliableConfig, TlsRecordReassembler};
 pub use session::{ProtocolSession, ProtocolState, ProcessedPacket};
-pub use tls::{TlsHandler, create_server_config, load_certs_from_pem, load_key_from_pem};
+pub use tls::{TlsHandler, TlsClientHandler, create_server_config, create_client_config, load_certs_from_pem, load_key_from_pem};

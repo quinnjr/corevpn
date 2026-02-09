@@ -1,0 +1,19 @@
+{
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "pegasusheavyindustries@gmail.com",
+                "Name": "Pegasus Heavy Industries LLC"
+            }
+        ],
+        "Category": "VPNService",
+        "Description": "CoreVPN client for NetworkManager",
+        "EnabledByDefault": false,
+        "Icon": "network-vpn",
+        "License": "GPL-3.0",
+        "Name": "CoreVPN",
+        "Version": "0.1.0",
+        "Website": "https://github.com/PegasusHeavyIndustries/corevpn"
+    },
+    "X-NetworkManager-Services": "org.freedesktop.NetworkManager.corevpn"
+}

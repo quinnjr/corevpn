@@ -12,6 +12,10 @@ keywords = ["vpn", "cli", "openvpn", "client", "networking"]
 categories = ["command-line-utilities", "network-programming"]
 readme = "README.md"
 
+[lib]
+name = "corevpn_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "corevpn"
 path = "src/main.rs"
@@ -21,9 +25,14 @@ corevpn-crypto = { workspace = true }
 corevpn-core = { workspace = true }
 corevpn-config = { workspace = true }
 corevpn-auth = { workspace = true }
+corevpn-protocol = { workspace = true }
 
 # Async
 tokio = { workspace = true }
+futures = { workspace = true }
+
+# TLS
+rustls = { workspace = true }
 
 # CLI
 clap = { workspace = true }
@@ -32,14 +41,23 @@ indicatif = { workspace = true }
 console = { workspace = true }
 ratatui = { workspace = true }
 
+# Networking
+tun = { workspace = true }
+ipnet = { workspace = true }
+socket2 = { workspace = true }
+
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
+base64 = { workspace = true }
 
 # Logging
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+# Utilities
+bytes = "1"
 
 # Error handling
 anyhow = { workspace = true }

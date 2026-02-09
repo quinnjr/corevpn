@@ -22,6 +22,7 @@ path = "src/main.rs"
 corevpn-core = { workspace = true }
 corevpn-auth = { workspace = true }
 corevpn-config = { workspace = true }
+corevpn-cli = { workspace = true }
 
 # UI Framework
 egui = { workspace = true }
@@ -50,8 +51,15 @@ chrono = { workspace = true }
 futures = { workspace = true }
 parking_lot = { workspace = true }
 
+# File dialogs
+rfd = { workspace = true }
+
 # Security
 zeroize = { workspace = true }
+
+# Linux display backends
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { workspace = true, features = ["x11", "wayland"] }
 
 [features]
 default = []

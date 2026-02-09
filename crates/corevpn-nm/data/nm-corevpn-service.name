@@ -1,0 +1,5 @@
+[VPN Connection]
+name=corevpn
+service=org.freedesktop.NetworkManager.corevpn
+program=/usr/lib/NetworkManager/nm-corevpn-service
+supports-external-ui-mode=false

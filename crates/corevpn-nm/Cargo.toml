@@ -1,0 +1,32 @@
+[package]
+name = "corevpn-nm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "NetworkManager VPN plugin for CoreVPN"
+keywords = ["vpn", "networkmanager", "dbus", "linux"]
+categories = ["network-programming"]
+
+[[bin]]
+name = "nm-corevpn-service"
+path = "src/main.rs"
+
+[dependencies]
+# Internal crates
+corevpn-cli = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# D-Bus
+zbus = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }

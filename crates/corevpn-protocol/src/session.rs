@@ -297,6 +297,14 @@ impl ProtocolSession {
                 if let Some(remote_sid) = ctrl.header.session_id {
                     self.remote_session_id = Some(remote_sid);
                 }
+
+                // ACK the server's hard reset via reliable transport
+                if let Some(packet_id) = ctrl.message_packet_id {
+                    let _ = self.reliable.receive(packet_id, Bytes::new())?;
+                }
+
+                self.state = ProtocolState::TlsHandshake;
+
                 Ok(ProcessedPacket::HardResetAck)
             }
             OpCode::ControlV1 => {
@@ -339,6 +347,29 @@ impl ProtocolSession {
         } else {
             Err(ProtocolError::KeyNotAvailable(packet.key_id.0))
         }
+    }
+
+    /// Create a hard reset client packet (client initiating connection)
+    pub fn create_hard_reset_client(&mut self) -> Result<Bytes> {
+        let (packet_id, _) = self.reliable.send(Bytes::new())?;
+
+        let packet = crate::packet::ControlPacketData {
+            header: crate::PacketHeader {
+                opcode: OpCode::HardResetClientV2,
+                key_id: KeyId::default(),
+                session_id: Some(self.local_session_id),
+                hmac: None,
+                packet_id: None,
+                timestamp: None,
+            },
+            remote_session_id: None, // No remote session yet
+            acks: vec![],
+            message_packet_id: Some(packet_id),
+            payload: Bytes::new(),
+        };
+
+        let serialized = Packet::Control(packet).serialize();
+        Ok(self.maybe_wrap_tls_auth(serialized.freeze()))
     }
 
     /// Create a hard reset response packet

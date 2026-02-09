@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=org.freedesktop.NetworkManager.corevpn
+Exec=/usr/lib/NetworkManager/nm-corevpn-service
+User=root
+SystemdService=nm-corevpn-service.service

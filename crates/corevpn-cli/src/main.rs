@@ -1,23 +1,37 @@
 //! CoreVPN CLI
 //!
-//! Command-line interface for managing CoreVPN.
+//! Command-line interface for managing CoreVPN connections and server.
 
 use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use tracing::info;
+
+use corevpn_cli::{client, ovpn};
 
 #[derive(Parser)]
 #[command(name = "corevpn")]
 #[command(about = "CoreVPN - Manage your VPN server and clients")]
 #[command(version)]
 struct Cli {
+    /// Verbosity level (-v, -vv, -vvv)
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    verbose: u8,
+
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Connect to a VPN server using an .ovpn config file
+    Connect {
+        /// Path to .ovpn configuration file
+        #[arg(value_name = "CONFIG")]
+        config: PathBuf,
+    },
+
     /// Initialize a new VPN server
     Init {
         /// Data directory
@@ -115,7 +129,34 @@ enum OAuthAction {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Set up logging
+    let log_level = match cli.verbose {
+        0 => "info",
+        1 => "debug",
+        _ => "trace",
+    };
+
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(log_level)),
+        )
+        .with_target(false)
+        .init();
+
     match cli.command {
+        Commands::Connect { config } => {
+            info!("CoreVPN Client v{}", env!("CARGO_PKG_VERSION"));
+
+            // Parse .ovpn config
+            let ovpn_config = ovpn::OvpnConfig::parse_file(&config)?;
+            info!("Loaded config: remote={}, cipher={}, proto={}",
+                ovpn_config.remote, ovpn_config.cipher, ovpn_config.protocol);
+
+            // Create and run VPN client
+            let vpn_client = client::VpnClient::new(ovpn_config);
+            vpn_client.connect().await?;
+        }
         Commands::Init { data_dir } => {
             println!("Initializing CoreVPN in {:?}...", data_dir);
             println!();
@@ -127,7 +168,6 @@ async fn main() -> Result<()> {
         }
         Commands::Stop => {
             println!("Stopping CoreVPN server...");
-            // Would send signal to systemd or directly to process
         }
         Commands::Restart => {
             println!("Restarting CoreVPN server...");

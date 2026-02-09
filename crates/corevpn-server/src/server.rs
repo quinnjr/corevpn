@@ -693,13 +693,20 @@ async fn handle_control_packet(
                         }
                     }
 
-                    // Check if handshake is complete
-                    if tls.is_handshake_complete() && conn.protocol.state() == ProtocolState::TlsHandshake {
-                        let tls_ver = tls.protocol_version().unwrap_or("unknown");
-                        let tls_cs = tls.cipher_suite().unwrap_or("unknown");
-                        info!("TLS handshake complete with {} (version={}, cipher={})", peer_addr, tls_ver, tls_cs);
-                        conn.protocol.set_state(ProtocolState::KeyExchange);
-                        conn.auth_method = AuthMethod::Certificate;
+                    // Check if handshake is complete - handle both initial completion
+                    // (TlsHandshake → KeyExchange) and deferred KM2 reading (already KeyExchange)
+                    let should_try_km = tls.is_handshake_complete() && matches!(
+                        conn.protocol.state(),
+                        ProtocolState::TlsHandshake | ProtocolState::KeyExchange
+                    );
+                    if should_try_km {
+                        if conn.protocol.state() == ProtocolState::TlsHandshake {
+                            let tls_ver = tls.protocol_version().unwrap_or("unknown");
+                            let tls_cs = tls.cipher_suite().unwrap_or("unknown");
+                            info!("TLS handshake complete with {} (version={}, cipher={})", peer_addr, tls_ver, tls_cs);
+                            conn.protocol.set_state(ProtocolState::KeyExchange);
+                            conn.auth_method = AuthMethod::Certificate;
+                        }
 
                         // Read client's key_method_v2 from TLS plaintext
                         let mut buf = vec![0u8; 4096];
@@ -965,6 +972,11 @@ async fn handle_control_packet(
                                                         warn!("Failed to send PUSH_REPLY to {}: {}", peer_addr, e);
                                                     }
 
+                                                    // Store PUSH_REPLY so we can resend on PUSH_REQUEST
+                                                    // (standard OpenVPN clients like Tunnelblick send
+                                                    // PUSH_REQUEST and expect PUSH_REPLY in response)
+                                                    conn.pending_push_reply = Some(reply_str);
+
                                                     // Flush TLS outgoing data for push reply
                                                     while tls.wants_write() {
                                                         if let Some(tls_out) = tls.get_outgoing()
@@ -1012,8 +1024,37 @@ async fn handle_control_packet(
                         while let Ok(n) = tls.read_plaintext(&mut buf) {
                             if n == 0 { break; }
                             let msg = String::from_utf8_lossy(&buf[..n]);
-                            debug!("Post-handshake plaintext from {}: {:?}", peer_addr, msg.trim_end_matches('\0'));
-                            // Client may send additional requests here
+                            let msg_trimmed = msg.trim_end_matches('\0').trim();
+                            debug!("Post-handshake plaintext from {}: {:?}", peer_addr, msg_trimmed);
+
+                            // Handle PUSH_REQUEST from standard OpenVPN clients
+                            // (e.g. Tunnelblick, OpenVPN Connect) which send
+                            // PUSH_REQUEST and expect PUSH_REPLY in response
+                            if msg_trimmed == "PUSH_REQUEST" {
+                                if let Some(ref reply_str) = conn.pending_push_reply {
+                                    debug!("Responding to PUSH_REQUEST from {} with stored PUSH_REPLY", peer_addr);
+                                    let reply_bytes = format!("{}\0", reply_str);
+                                    if let Err(e) = tls.write_plaintext(reply_bytes.as_bytes()) {
+                                        warn!("Failed to send PUSH_REPLY to {}: {}", peer_addr, e);
+                                    } else {
+                                        // Flush TLS outgoing data
+                                        while tls.wants_write() {
+                                            if let Some(tls_out) = tls.get_outgoing()
+                                                .map_err(|e| anyhow::anyhow!("TLS outgoing failed: {}", e))?
+                                            {
+                                                debug!("Sending {} bytes of PUSH_REPLY TLS data to {}", tls_out.len(), peer_addr);
+                                                let ctrl_packets = conn.protocol.create_control_packets(tls_out)?;
+                                                pending_packets.extend(ctrl_packets);
+                                            } else {
+                                                break;
+                                            }
+                                        }
+                                        info!("Sent PUSH_REPLY in response to PUSH_REQUEST from {}", peer_addr);
+                                    }
+                                } else {
+                                    warn!("Received PUSH_REQUEST from {} but no PUSH_REPLY available", peer_addr);
+                                }
+                            }
                             break;
                         }
                     }
