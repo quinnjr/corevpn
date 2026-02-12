@@ -944,14 +944,23 @@ async fn handle_control_packet(
                                                     let oauth_port = 9000; // OAuth HTTP server port
                                                     let auth_url = format!("http://{}:{}/auth/start?state={}", public_host, oauth_port, state_token);
 
-                                                    // Send AUTH_PENDING with OPEN_URL
-                                                    let auth_pending = format!("AUTH_PENDING,timeout 120,OPEN_URL:{}\0", auth_url);
-                                                    debug!("Sending AUTH_PENDING to {}: {}", peer_addr, auth_pending.trim_end_matches('\0'));
+                                                    // Send AUTH_PENDING and WEB_AUTH as separate control channel messages.
+                                                    // AUTH_PENDING extends the handshake timeout; the URL is delivered
+                                                    // via INFO_PRE so standard clients (Tunnelblick, OpenVPN Connect)
+                                                    // recognise it and open the browser.
+                                                    let auth_pending = "AUTH_PENDING,timeout 120\0";
+                                                    debug!("Sending AUTH_PENDING to {}", peer_addr);
                                                     if let Err(e) = tls.write_plaintext(auth_pending.as_bytes()) {
                                                         warn!("Failed to send AUTH_PENDING to {}: {}", peer_addr, e);
                                                     }
 
-                                                    // Flush TLS outgoing data for AUTH_PENDING
+                                                    let web_auth = format!("INFO_PRE,WEB_AUTH::{}\0", auth_url);
+                                                    debug!("Sending WEB_AUTH URL to {}: {}", peer_addr, auth_url);
+                                                    if let Err(e) = tls.write_plaintext(web_auth.as_bytes()) {
+                                                        warn!("Failed to send WEB_AUTH to {}: {}", peer_addr, e);
+                                                    }
+
+                                                    // Flush TLS outgoing data for AUTH_PENDING + WEB_AUTH
                                                     while tls.wants_write() {
                                                         if let Some(tls_out) = tls.get_outgoing()
                                                             .map_err(|e| anyhow::anyhow!("TLS outgoing failed: {}", e))?

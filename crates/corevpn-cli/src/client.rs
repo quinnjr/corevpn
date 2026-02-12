@@ -576,17 +576,25 @@ impl VpnClient {
                     .map_err(|e| anyhow::anyhow!("Failed to parse PUSH_REPLY: {}", e))?);
                 info!("Received PUSH_REPLY");
             } else if msg_str.contains("AUTH_PENDING") {
-                // Extract and display the auth URL for OAuth
-                if let Some(url_start) = msg_str.find("OPEN_URL:") {
-                    let url = &msg_str[url_start + 9..];
-                    // Trim any trailing commas or whitespace
-                    let url = url.split(',').next().unwrap_or(url).trim();
+                info!("Server requires authentication (pending)");
+                total_plaintext.clear();
+            } else if msg_str.starts_with("INFO_PRE,WEB_AUTH:") {
+                // WEB_AUTH format: INFO_PRE,WEB_AUTH:flags:url
+                // flags may be empty, so the URL follows the second ':'
+                if let Some(rest) = msg_str.strip_prefix("INFO_PRE,WEB_AUTH:") {
+                    // Skip flags (everything up to the next ':')
+                    let url = rest.split_once(':').map(|(_, u)| u).unwrap_or(rest).trim();
                     info!("Server requires OAuth authentication.");
                     info!("Please open this URL in your browser: {}", url);
                     eprintln!("\n  Open this URL to authenticate:\n  {}\n", url);
-                } else {
-                    info!("Server requires authentication: {}", msg_str);
                 }
+                total_plaintext.clear();
+            } else if msg_str.starts_with("INFO_PRE,OPEN_URL:") {
+                // Deprecated OPEN_URL format
+                let url = msg_str.strip_prefix("INFO_PRE,OPEN_URL:").unwrap_or("").trim();
+                info!("Server requires OAuth authentication.");
+                info!("Please open this URL in your browser: {}", url);
+                eprintln!("\n  Open this URL to authenticate:\n  {}\n", url);
                 total_plaintext.clear();
             }
         }
