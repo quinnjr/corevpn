@@ -1557,6 +1557,7 @@ async fn run_oauth_server(
 
     let app = Router::new()
         .route("/auth/start", get(oauth_start))
+        .route("/auth/callback", get(oauth_callback))
         .route("/auth/complete", axum::routing::post(oauth_complete))
         .with_state(state);
 
@@ -1573,15 +1574,11 @@ struct OAuthStartQuery {
     state: String,
 }
 
-/// The localhost port that the VPN client's SSO service listens on for OAuth callbacks.
-const CLIENT_OAUTH_CALLBACK_PORT: u16 = 19823;
-
 /// OAuth start handler - redirect to Google OAuth
 ///
-/// The redirect_uri points to localhost on the client machine. Google allows
-/// `http://localhost` redirect URIs (unlike non-localhost HTTP which is blocked).
-/// After Google authenticates the user, it redirects to the client's local server,
-/// which then POSTs the auth code to the VPN server's /auth/complete endpoint.
+/// The redirect_uri points back to this server's /auth/callback endpoint.
+/// After Google authenticates the user, it redirects back here, we exchange
+/// the code for a token, verify the user, and complete the VPN authentication.
 async fn oauth_start(
     axum::extract::State(state): axum::extract::State<OAuthState>,
     axum::extract::Query(query): axum::extract::Query<OAuthStartQuery>,
@@ -1600,9 +1597,8 @@ async fn oauth_start(
         }
     }
 
-    // The redirect goes to localhost on the client. The client's SSO service
-    // runs a temporary HTTP server on this port to catch the callback.
-    let redirect_uri = format!("http://localhost:{}/oauth/callback", CLIENT_OAUTH_CALLBACK_PORT);
+    let oauth_port = 9000;
+    let redirect_uri = format!("http://{}:{}/auth/callback", state.public_host, oauth_port);
 
     let auth_url = format!(
         "https://accounts.google.com/o/oauth2/v2/auth?\
@@ -1618,22 +1614,176 @@ async fn oauth_start(
         urlencoding::encode(&query.state),
     );
 
-    info!("OAuth start: redirecting to Google for state: {} (redirect to localhost:{})", query.state, CLIENT_OAUTH_CALLBACK_PORT);
+    info!("OAuth start: redirecting to Google for state: {} (callback: {})", query.state, redirect_uri);
     axum::response::Redirect::temporary(&auth_url).into_response()
 }
 
-/// Request body for the /auth/complete endpoint (POST from client's SSO service)
+/// Query params from the Google OAuth redirect to /auth/callback
+#[derive(serde::Deserialize)]
+struct OAuthCallbackQuery {
+    code: String,
+    state: String,
+}
+
+/// Server-side OAuth callback - Google redirects here after user authenticates.
+///
+/// This handles the entire flow server-side so standard OpenVPN clients
+/// (Tunnelblick, OpenVPN Connect) work without needing a local HTTP server.
+async fn oauth_callback(
+    axum::extract::State(state): axum::extract::State<OAuthState>,
+    axum::extract::Query(query): axum::extract::Query<OAuthCallbackQuery>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    use axum::http::StatusCode;
+    use secrecy::ExposeSecret;
+
+    info!("OAuth /auth/callback received for state: {}", query.state);
+
+    // Verify state token
+    {
+        let pending = state.pending_oauths.read();
+        if !pending.contains_key(&query.state) {
+            warn!("OAuth callback: invalid state token: {}", query.state);
+            return (StatusCode::BAD_REQUEST, axum::response::Html(
+                "<html><body><h1>Authentication Failed</h1><p>Invalid or expired authentication state. Please try connecting again.</p></body></html>"
+            )).into_response();
+        }
+    }
+
+    // The redirect_uri must match exactly what was sent to Google in /auth/start
+    let oauth_port = 9000;
+    let redirect_uri = format!("http://{}:{}/auth/callback", state.public_host, oauth_port);
+
+    // Exchange authorization code for tokens
+    let client = reqwest::Client::new();
+    let token_response = client.post("https://oauth2.googleapis.com/token")
+        .form(&[
+            ("code", query.code.as_str()),
+            ("client_id", state.config.client_id.as_str()),
+            ("client_secret", state.config.client_secret.expose_secret()),
+            ("redirect_uri", redirect_uri.as_str()),
+            ("grant_type", "authorization_code"),
+        ])
+        .send()
+        .await;
+
+    let token_response = match token_response {
+        Ok(r) => r,
+        Err(e) => {
+            error!("OAuth token exchange failed: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, axum::response::Html(
+                "<html><body><h1>Authentication Failed</h1><p>Token exchange failed. Please try again.</p></body></html>"
+            )).into_response();
+        }
+    };
+
+    if !token_response.status().is_success() {
+        let body_text = token_response.text().await.unwrap_or_default();
+        error!("OAuth token exchange returned error: {}", body_text);
+        return (StatusCode::INTERNAL_SERVER_ERROR, axum::response::Html(
+            "<html><body><h1>Authentication Failed</h1><p>Token exchange failed. Please try again.</p></body></html>"
+        )).into_response();
+    }
+
+    let token_data: serde_json::Value = match token_response.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Failed to parse OAuth token response: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, axum::response::Html(
+                "<html><body><h1>Authentication Failed</h1><p>Internal error. Please try again.</p></body></html>"
+            )).into_response();
+        }
+    };
+
+    let access_token = match token_data["access_token"].as_str() {
+        Some(t) => t,
+        None => {
+            error!("No access_token in OAuth response");
+            return (StatusCode::INTERNAL_SERVER_ERROR, axum::response::Html(
+                "<html><body><h1>Authentication Failed</h1><p>No access token received. Please try again.</p></body></html>"
+            )).into_response();
+        }
+    };
+
+    let userinfo_response = client.get("https://www.googleapis.com/oauth2/v3/userinfo")
+        .bearer_auth(access_token)
+        .send()
+        .await;
+
+    let userinfo: serde_json::Value = match userinfo_response {
+        Ok(r) if r.status().is_success() => {
+            match r.json().await {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("Failed to parse userinfo: {}", e);
+                    return (StatusCode::INTERNAL_SERVER_ERROR, axum::response::Html(
+                        "<html><body><h1>Authentication Failed</h1><p>Internal error. Please try again.</p></body></html>"
+                    )).into_response();
+                }
+            }
+        }
+        _ => {
+            error!("Userinfo request failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, axum::response::Html(
+                "<html><body><h1>Authentication Failed</h1><p>Could not verify identity. Please try again.</p></body></html>"
+            )).into_response();
+        }
+    };
+
+    let email = match userinfo["email"].as_str() {
+        Some(e) => e.to_string(),
+        None => {
+            error!("No email in userinfo response");
+            return (StatusCode::FORBIDDEN, axum::response::Html(
+                "<html><body><h1>Authentication Failed</h1><p>No email in profile.</p></body></html>"
+            )).into_response();
+        }
+    };
+
+    // Check allowed domains
+    if !state.config.allowed_domains.is_empty() {
+        let email_domain = email.split('@').last().unwrap_or("");
+        if !state.config.allowed_domains.iter().any(|d| d == email_domain) {
+            warn!("OAuth: email {} not in allowed domains {:?}", email, state.config.allowed_domains);
+            return (StatusCode::FORBIDDEN, axum::response::Html(
+                "<html><body><h1>Access Denied</h1><p>Your email domain is not authorized for VPN access.</p></body></html>"
+            )).into_response();
+        }
+    }
+
+    info!("OAuth authentication successful for: {}", email);
+
+    // Notify VPN server of auth completion
+    if let Err(e) = state.auth_completed_tx.send(AuthCompleted {
+        state: query.state,
+        email: email.clone(),
+    }).await {
+        error!("Failed to send auth completion: {}", e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, axum::response::Html(
+            "<html><body><h1>Authentication Failed</h1><p>Internal error. Please try again.</p></body></html>"
+        )).into_response();
+    }
+
+    // Return a user-friendly success page
+    axum::response::Html(format!(
+        "<html><body style=\"font-family: sans-serif; text-align: center; margin-top: 80px;\">\
+         <h1>VPN Authentication Successful</h1>\
+         <p>Authenticated as <strong>{}</strong></p>\
+         <p>Your VPN connection is being established. You can close this window.</p>\
+         </body></html>",
+        email
+    )).into_response()
+}
+
+/// Request body for the /auth/complete endpoint (POST from native corevpn client)
 #[derive(serde::Deserialize)]
 struct OAuthCompleteRequest {
     code: String,
     state: String,
 }
 
-/// OAuth complete handler - receives the auth code from the VPN client's SSO service.
-///
-/// Flow: Google redirected to localhost on the client -> the client's SSO service
-/// caught the callback and POSTs the code + state here -> we exchange code for token,
-/// verify the user, and complete the VPN authentication.
+/// OAuth complete handler - receives the auth code from the native corevpn client.
+/// Kept for backward compatibility with the native client's local SSO service.
 async fn oauth_complete(
     axum::extract::State(state): axum::extract::State<OAuthState>,
     axum::extract::Json(body): axum::extract::Json<OAuthCompleteRequest>,
@@ -1656,7 +1806,8 @@ async fn oauth_complete(
     }
 
     // The redirect_uri must match exactly what was sent to Google in /auth/start
-    let redirect_uri = format!("http://localhost:{}/oauth/callback", CLIENT_OAUTH_CALLBACK_PORT);
+    let oauth_port = 9000;
+    let redirect_uri = format!("http://{}:{}/auth/callback", state.public_host, oauth_port);
 
     // Exchange authorization code for tokens
     let client = reqwest::Client::new();
