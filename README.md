@@ -131,7 +131,7 @@ sudo apk add --repository https://pkg.corevpn.io/alpine corevpn-server
 ### From Source
 
 ```bash
-# Prerequisites: Rust 1.70+
+# Prerequisites: Rust 1.85+
 git clone https://github.com/pegasusheavy/corevpn.git
 cd corevpn
 
@@ -199,13 +199,22 @@ connection_mode = "memory"  # none | memory | file | database
 hash_client_ips = true
 round_timestamps = true
 
-# OAuth2 (optional)
+# OAuth2/SSO (optional)
 [oauth]
 enabled = true
 provider = "google"
 client_id = "your-client-id"
 client_secret = "your-client-secret"
 allowed_domains = ["yourcompany.com"]
+
+# OAuth callback port (default: 9000)
+oauth_port = 9000
+
+# External URL for OAuth callbacks (optional).
+# Use when behind a reverse proxy or when the public URL
+# differs from the server's listen address.
+# If not set, defaults to https://<public_host>:<oauth_port>
+# external_url = "https://vpn.example.com"
 ```
 
 ## Authentication
@@ -218,6 +227,10 @@ allowed_domains = ["yourcompany.com"]
 | Microsoft/Azure AD | `provider = "microsoft"`, `tenant_id = "..."` |
 | Okta | `provider = "okta"`, `domain = "your-org.okta.com"` |
 | Generic OIDC | `provider = "generic"`, `issuer_url = "..."` |
+
+OAuth uses HTTPS redirect URIs by default, which is required by providers like Google.
+Set `external_url` in the `[oauth]` config section if your server is behind a reverse proxy
+or load balancer.
 
 ### Certificate-Based
 
