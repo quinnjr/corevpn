@@ -414,13 +414,14 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         let auth_tx = auth_completed_tx.clone();
         let oauth_base_url = build_oauth_base_url(&oauth_config, &config.server.public_host);
         let listen_port = oauth_config.oauth_port;
+        let oauth_data_dir = std::path::PathBuf::from(&config.server.data_dir);
 
         tokio::spawn(async move {
-            if let Err(e) = run_oauth_server(oauth_config, pending_oauths, auth_tx, oauth_base_url, listen_port).await {
-                error!("OAuth HTTP server error: {}", e);
+            if let Err(e) = run_oauth_server(oauth_config, pending_oauths, auth_tx, oauth_base_url, listen_port, oauth_data_dir).await {
+                error!("OAuth HTTPS server error: {}", e);
             }
         });
-        info!("OAuth HTTP server started on port {}", config.oauth.as_ref().unwrap().oauth_port);
+        info!("OAuth HTTPS server started on port {}", config.oauth.as_ref().unwrap().oauth_port);
     }
 
     // Main event loop: multiplex UDP recv, TUN read, and keepalive timer
@@ -1565,13 +1566,17 @@ async fn handle_auth_completed(
     Ok(())
 }
 
-/// Run the OAuth HTTP server for handling SSO callbacks
+/// Run the OAuth HTTPS server for handling SSO callbacks.
+///
+/// Serves over TLS using the VPN server's certificate and key so that
+/// Google OAuth (which requires HTTPS redirect URIs) works correctly.
 async fn run_oauth_server(
     oauth_config: corevpn_config::server::OAuthSettings,
     pending_oauths: PendingOAuthMap,
     auth_completed_tx: tokio::sync::mpsc::Sender<AuthCompleted>,
     oauth_base_url: String,
     listen_port: u16,
+    data_dir: std::path::PathBuf,
 ) -> Result<()> {
     use axum::{Router, routing::get};
 
@@ -1590,11 +1595,57 @@ async fn run_oauth_server(
 
     let bind_addr = format!("0.0.0.0:{}", listen_port);
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
-    info!("OAuth HTTP server listening on {}", bind_addr);
 
-    axum::serve(listener, app).await?;
+    // Load TLS certificate and key from the VPN data directory
+    let cert_pem = std::fs::read_to_string(data_dir.join("server.crt"))
+        .map_err(|e| anyhow::anyhow!("Failed to read server.crt for OAuth HTTPS: {}", e))?;
+    let key_pem = std::fs::read_to_string(data_dir.join("server.key"))
+        .map_err(|e| anyhow::anyhow!("Failed to read server.key for OAuth HTTPS: {}", e))?;
 
-    Ok(())
+    let certs = load_certs_from_pem(&cert_pem)?;
+    let key = load_key_from_pem(&key_pem)?;
+
+    let tls_config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| anyhow::anyhow!("Failed to build TLS config for OAuth: {}", e))?;
+    let tls_acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls_config));
+
+    info!("OAuth HTTPS server listening on {}", bind_addr);
+
+    loop {
+        let (tcp_stream, addr) = listener.accept().await?;
+        let tls_acceptor = tls_acceptor.clone();
+        let app = app.clone();
+
+        tokio::spawn(async move {
+            let tls_stream = match tls_acceptor.accept(tcp_stream).await {
+                Ok(s) => s,
+                Err(e) => {
+                    debug!("OAuth TLS handshake failed from {}: {}", addr, e);
+                    return;
+                }
+            };
+
+            let io = hyper_util::rt::TokioIo::new(tls_stream);
+            let service = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                let mut app = app.clone();
+                async move {
+                    use tower::Service;
+                    app.call(req).await
+                }
+            });
+
+            if let Err(e) = hyper_util::server::conn::auto::Builder::new(
+                hyper_util::rt::TokioExecutor::new(),
+            )
+            .serve_connection(io, service)
+            .await
+            {
+                debug!("OAuth connection error from {}: {}", addr, e);
+            }
+        });
+    }
 }
 
 #[derive(serde::Deserialize)]

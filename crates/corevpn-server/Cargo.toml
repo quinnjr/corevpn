@@ -71,6 +71,9 @@ reqwest = { workspace = true }
 
 # TLS
 rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1"] }
 
 # UUID
 uuid = { workspace = true }
