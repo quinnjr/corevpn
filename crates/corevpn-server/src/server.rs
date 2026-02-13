@@ -412,14 +412,15 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         let oauth_config = config.oauth.clone().unwrap();
         let pending_oauths = server.pending_oauths.clone();
         let auth_tx = auth_completed_tx.clone();
-        let public_host = config.server.public_host.clone();
+        let oauth_base_url = build_oauth_base_url(&oauth_config, &config.server.public_host);
+        let listen_port = oauth_config.oauth_port;
 
         tokio::spawn(async move {
-            if let Err(e) = run_oauth_server(oauth_config, pending_oauths, auth_tx, public_host).await {
+            if let Err(e) = run_oauth_server(oauth_config, pending_oauths, auth_tx, oauth_base_url, listen_port).await {
                 error!("OAuth HTTP server error: {}", e);
             }
         });
-        info!("OAuth HTTP server started on port 9000");
+        info!("OAuth HTTP server started on port {}", config.oauth.as_ref().unwrap().oauth_port);
     }
 
     // Main event loop: multiplex UDP recv, TUN read, and keepalive timer
@@ -940,9 +941,11 @@ async fn handle_control_packet(
                                                     }
 
                                                     // Build OAuth URL
-                                                    let public_host = &server.config.server.public_host;
-                                                    let oauth_port = 9000; // OAuth HTTP server port
-                                                    let auth_url = format!("http://{}:{}/auth/start?state={}", public_host, oauth_port, state_token);
+                                                    let oauth_base = build_oauth_base_url(
+                                                        server.config.oauth.as_ref().unwrap(),
+                                                        &server.config.server.public_host,
+                                                    );
+                                                    let auth_url = format!("{}/auth/start?state={}", oauth_base, state_token);
 
                                                     // Send AUTH_PENDING and WEB_AUTH as separate control channel messages.
                                                     // AUTH_PENDING extends the handshake timeout; the URL is delivered
@@ -1444,7 +1447,30 @@ struct OAuthState {
     config: corevpn_config::server::OAuthSettings,
     pending_oauths: PendingOAuthMap,
     auth_completed_tx: tokio::sync::mpsc::Sender<AuthCompleted>,
-    public_host: String,
+    /// Base URL for OAuth callbacks (e.g. "https://vpn.example.com:9000")
+    oauth_base_url: String,
+}
+
+/// Build the OAuth base URL from config.
+///
+/// If `external_url` is set in the OAuth config, use it directly (stripping
+/// any trailing slash).  Otherwise construct from the server's public_host
+/// and the configured oauth_port, always using HTTPS (required by Google
+/// and most other OAuth providers for non-localhost redirect URIs).
+fn build_oauth_base_url(
+    oauth_config: &corevpn_config::server::OAuthSettings,
+    public_host: &str,
+) -> String {
+    if let Some(ref ext) = oauth_config.external_url {
+        ext.trim_end_matches('/').to_string()
+    } else {
+        let port = oauth_config.oauth_port;
+        if port == 443 {
+            format!("https://{}", public_host)
+        } else {
+            format!("https://{}:{}", public_host, port)
+        }
+    }
 }
 
 /// Handle OAuth authentication completion - send deferred PUSH_REPLY
@@ -1544,7 +1570,8 @@ async fn run_oauth_server(
     oauth_config: corevpn_config::server::OAuthSettings,
     pending_oauths: PendingOAuthMap,
     auth_completed_tx: tokio::sync::mpsc::Sender<AuthCompleted>,
-    public_host: String,
+    oauth_base_url: String,
+    listen_port: u16,
 ) -> Result<()> {
     use axum::{Router, routing::get};
 
@@ -1552,7 +1579,7 @@ async fn run_oauth_server(
         config: oauth_config,
         pending_oauths,
         auth_completed_tx,
-        public_host,
+        oauth_base_url,
     };
 
     let app = Router::new()
@@ -1561,8 +1588,9 @@ async fn run_oauth_server(
         .route("/auth/complete", axum::routing::post(oauth_complete))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:9000").await?;
-    info!("OAuth HTTP server listening on 0.0.0.0:9000");
+    let bind_addr = format!("0.0.0.0:{}", listen_port);
+    let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+    info!("OAuth HTTP server listening on {}", bind_addr);
 
     axum::serve(listener, app).await?;
 
@@ -1597,8 +1625,7 @@ async fn oauth_start(
         }
     }
 
-    let oauth_port = 9000;
-    let redirect_uri = format!("http://{}:{}/auth/callback", state.public_host, oauth_port);
+    let redirect_uri = format!("{}/auth/callback", state.oauth_base_url);
 
     let auth_url = format!(
         "https://accounts.google.com/o/oauth2/v2/auth?\
@@ -1651,8 +1678,7 @@ async fn oauth_callback(
     }
 
     // The redirect_uri must match exactly what was sent to Google in /auth/start
-    let oauth_port = 9000;
-    let redirect_uri = format!("http://{}:{}/auth/callback", state.public_host, oauth_port);
+    let redirect_uri = format!("{}/auth/callback", state.oauth_base_url);
 
     // Exchange authorization code for tokens
     let client = reqwest::Client::new();
@@ -1806,8 +1832,7 @@ async fn oauth_complete(
     }
 
     // The redirect_uri must match exactly what was sent to Google in /auth/start
-    let oauth_port = 9000;
-    let redirect_uri = format!("http://{}:{}/auth/callback", state.public_host, oauth_port);
+    let redirect_uri = format!("{}/auth/callback", state.oauth_base_url);
 
     // Exchange authorization code for tokens
     let client = reqwest::Client::new();

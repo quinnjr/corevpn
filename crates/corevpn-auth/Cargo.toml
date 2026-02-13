@@ -56,5 +56,7 @@ urlencoding = "2"
 url = "2"
 
 # JWT verification
-jsonwebtoken = "9"# Email parsing
+jsonwebtoken = "9"
+
+# Email parsing
 addr = "0.15"

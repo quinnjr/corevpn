@@ -426,6 +426,8 @@ fn setup_google_oauth(theme: &ColorfulTheme) -> Result<corevpn_config::server::O
         domain: None,
         allowed_domains: if domain.is_empty() { vec![] } else { vec![domain] },
         required_groups: vec![],
+        oauth_port: 9000,
+        external_url: None,
     })
 }
 
@@ -462,6 +464,8 @@ fn setup_microsoft_oauth(theme: &ColorfulTheme) -> Result<corevpn_config::server
         domain: None,
         allowed_domains: vec![],
         required_groups: vec![],
+        oauth_port: 9000,
+        external_url: None,
     })
 }
 
@@ -496,5 +500,7 @@ fn setup_okta_oauth(theme: &ColorfulTheme) -> Result<corevpn_config::server::OAu
         domain: Some(domain),
         allowed_domains: vec![],
         required_groups: vec![],
+        oauth_port: 9000,
+        external_url: None,
     })
 }

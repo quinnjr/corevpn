@@ -193,6 +193,18 @@ pub struct OAuthSettings {
     /// Required groups (user must be in at least one)
     #[serde(default)]
     pub required_groups: Vec<String>,
+    /// Port for the OAuth HTTP callback server (default: 9000)
+    #[serde(default = "default_oauth_port")]
+    pub oauth_port: u16,
+    /// External base URL for OAuth callbacks, e.g. "https://vpn.example.com".
+    /// If set, this is used as-is for constructing redirect_uri and auth URLs.
+    /// If not set, the URL is built from public_host and oauth_port with HTTPS.
+    #[serde(default)]
+    pub external_url: Option<String>,
+}
+
+fn default_oauth_port() -> u16 {
+    9000
 }
 
 /// Connection logging mode
