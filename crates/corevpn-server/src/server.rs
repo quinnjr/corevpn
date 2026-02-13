@@ -1596,11 +1596,11 @@ async fn run_oauth_server(
     let bind_addr = format!("0.0.0.0:{}", listen_port);
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
 
-    // Load TLS certificate and key from the VPN data directory
-    let cert_pem = std::fs::read_to_string(data_dir.join("server.crt"))
-        .map_err(|e| anyhow::anyhow!("Failed to read server.crt for OAuth HTTPS: {}", e))?;
-    let key_pem = std::fs::read_to_string(data_dir.join("server.key"))
-        .map_err(|e| anyhow::anyhow!("Failed to read server.key for OAuth HTTPS: {}", e))?;
+    // Load TLS certificate and key for OAuth HTTPS (e.g. Let's Encrypt)
+    let cert_pem = std::fs::read_to_string(data_dir.join("oauth.crt"))
+        .map_err(|e| anyhow::anyhow!("Failed to read oauth.crt for OAuth HTTPS: {}", e))?;
+    let key_pem = std::fs::read_to_string(data_dir.join("oauth.key"))
+        .map_err(|e| anyhow::anyhow!("Failed to read oauth.key for OAuth HTTPS: {}", e))?;
 
     let certs = load_certs_from_pem(&cert_pem)?;
     let key = load_key_from_pem(&key_pem)?;
