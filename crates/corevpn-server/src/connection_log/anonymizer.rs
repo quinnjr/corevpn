@@ -17,6 +17,8 @@ pub struct Anonymizer {
     daily_salt: [u8; 32],
     /// Current day (for salt rotation)
     current_day: u32,
+    /// Random per-instance secret mixed into salt generation
+    instance_secret: [u8; 32],
 }
 
 impl Anonymizer {
@@ -24,20 +26,25 @@ impl Anonymizer {
         let now = Utc::now();
         let day = now.ordinal();
 
+        let mut instance_secret = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut instance_secret);
+
         Self {
             config,
-            daily_salt: Self::generate_salt(day),
+            daily_salt: Self::generate_salt(day, &instance_secret),
             current_day: day,
+            instance_secret,
         }
     }
 
-    fn generate_salt(day: u32) -> [u8; 32] {
+    fn generate_salt(day: u32, instance_secret: &[u8; 32]) -> [u8; 32] {
         use sha2::{Sha256, Digest};
-        
+
         let mut hasher = Sha256::new();
+        hasher.update(instance_secret);
         hasher.update(&day.to_le_bytes());
         hasher.update(b"corevpn-anonymizer-salt");
-        
+
         let hash = hasher.finalize();
         let mut salt = [0u8; 32];
         salt.copy_from_slice(&hash[..32]);
@@ -49,7 +56,7 @@ impl Anonymizer {
         let day = now.ordinal();
 
         if day != self.current_day {
-            self.daily_salt = Self::generate_salt(day);
+            self.daily_salt = Self::generate_salt(day, &self.instance_secret);
             self.current_day = day;
         }
     }

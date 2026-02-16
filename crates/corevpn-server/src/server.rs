@@ -532,7 +532,7 @@ async fn handle_packet(
     // Debug: hex dump first bytes of every control packet
     if opcode.is_control() {
         let hex: String = data.iter().take(64).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
-        debug!("Raw {} packet from {} ({} bytes): {}{}", opcode, peer_addr, data.len(), hex, if data.len() > 64 { "..." } else { "" });
+        trace!("Raw {} packet from {} ({} bytes): {}{}", opcode, peer_addr, data.len(), hex, if data.len() > 64 { "..." } else { "" });
     }
 
     match opcode {
@@ -727,7 +727,10 @@ async fn handle_control_packet(
                                     Ok(client_km) => {
                                         debug!("Client options: {}", client_km.options);
                                         if let Some(ref pi) = client_km.peer_info {
-                                            debug!("Client peer_info: {}", pi);
+                                            let summary: Vec<&str> = pi.lines()
+                                                .filter(|l| l.starts_with("IV_VER=") || l.starts_with("IV_PLAT="))
+                                                .collect();
+                                            debug!("Client peer_info summary: {}", summary.join(", "));
                                         }
                                         if let Some(ref user) = client_km.username {
                                             conn.username = Some(user.clone());
@@ -818,13 +821,6 @@ async fn handle_control_packet(
                                         //   key_block     = PRF(master_secret, "OpenVPN key expansion",
                                         //                       client_random2 || server_random2, 256)
                                         {
-                                            debug!("PRF inputs: pre_master[..8]={:02x?} client_r1[..8]={:02x?} server_r1[..8]={:02x?} client_r2[..8]={:02x?} server_r2[..8]={:02x?}",
-                                                &client_km.pre_master[..8],
-                                                &client_km.random1[..8],
-                                                &server_random1[..8],
-                                                &client_km.random2[..8],
-                                                &server_random2[..8]);
-
                                             // Step 1: derive master secret
                                             let mut seed1 = Vec::with_capacity(64);
                                             seed1.extend_from_slice(&client_km.random1);
@@ -835,8 +831,6 @@ async fn handle_control_packet(
                                                 &seed1,
                                                 48,
                                             ).map_err(|e| anyhow::anyhow!("PRF master secret failed: {}", e))?;
-
-                                            debug!("PRF master_secret[..8]={:02x?}", &master_secret[..8]);
 
                                             // Step 2: expand into key block (256 bytes = key2 struct)
                                             // OpenVPN includes session IDs in the key expansion seed:
@@ -860,10 +854,6 @@ async fn handle_control_packet(
                                             ).map_err(|e| anyhow::anyhow!("PRF key expansion failed: {}", e))?;
 
                                             let km = corevpn_crypto::KeyMaterial::from_openvpn_key2_block(&key_block);
-                                            debug!("PRF key[0].cipher[..8]={:02x?} key[0].hmac[..12]={:02x?}",
-                                                &key_block[0..8], &key_block[64..76]);
-                                            debug!("PRF key[1].cipher[..8]={:02x?} key[1].hmac[..12]={:02x?}",
-                                                &key_block[128..136], &key_block[192..204]);
 
                                             conn.protocol.install_keys(&km, true);
                                             info!("Installed PRF data channel keys for {}", peer_addr);
@@ -925,7 +915,7 @@ async fn handle_control_packet(
 
                                                 if oauth_enabled {
                                                     // Generate OAuth state token
-                                                    let state_token = format!("{:x}", rand::random::<u64>());
+                                                    let state_token = format!("{:032x}", rand::random::<u128>());
 
                                                     // Store pending push reply and state
                                                     conn.pending_push_reply = Some(reply_str.clone());
@@ -979,7 +969,7 @@ async fn handle_control_packet(
                                                     info!("Waiting for OAuth authentication from {} (state: {})", peer_addr, state_token);
                                                 } else {
                                                     // No OAuth - send PUSH_REPLY immediately
-                                                    debug!("Sending PUSH_REPLY to {}: {}", peer_addr, reply_str);
+                                                    debug!("Sending PUSH_REPLY to {}", peer_addr);
                                                     let reply_bytes = format!("{}\0", reply_str);
                                                     if let Err(e) = tls.write_plaintext(reply_bytes.as_bytes()) {
                                                         warn!("Failed to send PUSH_REPLY to {}: {}", peer_addr, e);
@@ -1153,11 +1143,11 @@ async fn handle_data_packet(
         // Debug: hex dump first data packets
         if conn.stats.packets_rx <= 5 {
             let hex: String = data.iter().take(64).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
-            info!("Data packet #{} from {} ({} bytes): {}{}", conn.stats.packets_rx, peer_addr, data.len(), hex, if data.len() > 64 { "..." } else { "" });
+            trace!("Data packet #{} from {} ({} bytes): {}{}", conn.stats.packets_rx, peer_addr, data.len(), hex, if data.len() > 64 { "..." } else { "" });
             // Log opcode parsing
             if !data.is_empty() {
                 let opcode_byte = data[0];
-                info!("  opcode_byte=0x{:02x} (opcode={}, key_id={})", opcode_byte, opcode_byte >> 3, opcode_byte & 0x07);
+                trace!("  opcode_byte=0x{:02x} (opcode={}, key_id={})", opcode_byte, opcode_byte >> 3, opcode_byte & 0x07);
             }
         }
 
@@ -1454,6 +1444,37 @@ struct OAuthState {
 
 /// Build the OAuth base URL from config.
 ///
+/// Truncate and redact an OAuth error response body for safe logging.
+/// Limits output to 200 chars and replaces values of fields containing
+/// "token" or "secret" with "[REDACTED]".
+fn redact_oauth_error(body: &str) -> String {
+    // Try to parse as JSON and redact sensitive fields
+    if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(obj) = value.as_object_mut() {
+            let keys: Vec<String> = obj.keys().cloned().collect();
+            for key in keys {
+                let lower = key.to_lowercase();
+                if lower.contains("token") || lower.contains("secret") {
+                    obj.insert(key, serde_json::Value::String("[REDACTED]".to_string()));
+                }
+            }
+        }
+        let redacted = value.to_string();
+        if redacted.len() > 200 {
+            format!("{}...", &redacted[..200])
+        } else {
+            redacted
+        }
+    } else {
+        // Not JSON — just truncate
+        if body.len() > 200 {
+            format!("{}...", &body[..200])
+        } else {
+            body.to_string()
+        }
+    }
+}
+
 /// If `external_url` is set in the OAuth config, use it directly (stripping
 /// any trailing slash).  Otherwise construct from the server's public_host
 /// and the configured oauth_port, always using HTTPS (required by Google
@@ -1531,7 +1552,7 @@ async fn handle_auth_completed(
         }
     };
 
-    debug!("Sending deferred PUSH_REPLY to {} (user: {}): {}", peer_addr, auth.email, push_reply_str);
+    debug!("Sending deferred PUSH_REPLY to {}", peer_addr);
     let reply_bytes = format!("{}\0", push_reply_str);
     if let Err(e) = tls.write_plaintext(reply_bytes.as_bytes()) {
         warn!("Failed to send PUSH_REPLY to {}: {}", peer_addr, e);
@@ -1756,7 +1777,8 @@ async fn oauth_callback(
 
     if !token_response.status().is_success() {
         let body_text = token_response.text().await.unwrap_or_default();
-        error!("OAuth token exchange returned error: {}", body_text);
+        let redacted = redact_oauth_error(&body_text);
+        error!("OAuth token exchange returned error: {}", redacted);
         return (StatusCode::INTERNAL_SERVER_ERROR, axum::response::Html(
             "<html><body><h1>Authentication Failed</h1><p>Token exchange failed. Please try again.</p></body></html>"
         )).into_response();
@@ -1842,13 +1864,19 @@ async fn oauth_callback(
     }
 
     // Return a user-friendly success page
+    let escaped_email = email
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;");
     axum::response::Html(format!(
         "<html><body style=\"font-family: sans-serif; text-align: center; margin-top: 80px;\">\
          <h1>VPN Authentication Successful</h1>\
          <p>Authenticated as <strong>{}</strong></p>\
          <p>Your VPN connection is being established. You can close this window.</p>\
          </body></html>",
-        email
+        escaped_email
     )).into_response()
 }
 
@@ -1910,7 +1938,8 @@ async fn oauth_complete(
 
     if !token_response.status().is_success() {
         let body_text = token_response.text().await.unwrap_or_default();
-        error!("OAuth token exchange returned error: {}", body_text);
+        let redacted = redact_oauth_error(&body_text);
+        error!("OAuth token exchange returned error: {}", redacted);
         return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({
             "error": "Token exchange failed"
         }))).into_response();
