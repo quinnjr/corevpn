@@ -1,0 +1,48 @@
+# CoreVPN
+
+> Secure OpenVPN-compatible VPN server with OAuth2/SAML support and ghost mode, written in Rust.
+
+CoreVPN is a memory-safe VPN server that implements the OpenVPN protocol, working with existing OpenVPN clients. It adds modern features missing from OpenVPN: OAuth2/OIDC/SAML authentication (Google, Microsoft, Okta), ghost mode for zero connection logging, TLS 1.3 with ChaCha20-Poly1305, a web admin interface, a native desktop GUI client, and full container/Kubernetes support. Built in Rust for memory safety and performance.
+
+## Links
+
+- [Documentation](https://pegasusheavy.github.io/corevpn/)
+- [GitHub Repository](https://github.com/pegasusheavy/corevpn)
+
+## Key Features
+
+- OpenVPN protocol compatible -- works with existing OpenVPN clients
+- Modern authentication -- OAuth2, OIDC, SAML with Google, Microsoft, Okta support
+- Ghost mode -- zero connection logging for privacy-focused deployments
+- Modern security -- TLS 1.3, ChaCha20-Poly1305, Ed25519, AES-256-GCM
+- Web admin interface -- manage clients, monitor connections, generate configs
+- Desktop GUI client -- native GUI built with OpenKit
+- Container ready -- Docker, Kubernetes, Helm charts included
+- Easy deployment -- DEB, RPM, systemd, OpenRC packages, one-line installer
+- Written in Rust -- memory-safe implementation
+
+## Installation
+
+```bash
+# Docker (fastest)
+docker run -d --name corevpn --cap-add NET_ADMIN --device /dev/net/tun \
+  -p 1194:1194/udp -p 8080:8080 ghcr.io/pegasusheavy/corevpn:latest
+
+# From source
+git clone https://github.com/pegasusheavy/corevpn.git
+cd corevpn
+cargo build --release
+```
+
+## Quick Start
+
+```bash
+# Run with Docker
+docker run -d --name corevpn --cap-add NET_ADMIN --device /dev/net/tun \
+  -p 1194:1194/udp -p 8080:8080 ghcr.io/pegasusheavy/corevpn:latest
+
+# Access web UI at http://localhost:8080
+
+# Generate a client config
+corevpn-server client --user alice@example.com --output alice.ovpn
+```
