@@ -57,7 +57,8 @@ impl ConfigGenerator {
         .ca_cert(&self.ca_cert_pem)
         .client_cert(&cert.cert_pem)
         .client_key(&cert.key_pem)
-        .cipher(&self.map_cipher(&self.server_config.security.cipher));
+        .cipher(&self.map_cipher(&self.server_config.security.cipher))
+        .reneg_sec(self.server_config.security.reneg_sec);
 
         // Add tls-auth if enabled
         if let Some(ta_key) = &self.ta_key {
@@ -99,6 +100,7 @@ impl ConfigGenerator {
         .client_cert(&generated.certificate.cert_pem)
         .client_key(&generated.certificate.key_pem)
         .cipher(&self.map_cipher(&self.server_config.security.cipher))
+        .reneg_sec(self.server_config.security.reneg_sec)
         .extra_option("connect-retry 2")
         .extra_option("connect-retry-max 5")
         .extra_option("auth-retry interact")

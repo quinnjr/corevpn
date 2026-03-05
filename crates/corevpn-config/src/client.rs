@@ -29,6 +29,9 @@ pub struct ClientConfig {
     pub auth: String,
     /// Key direction for tls-auth
     pub key_direction: Option<u8>,
+    /// Renegotiation interval in seconds (0 = use server default)
+    #[serde(default)]
+    pub reneg_sec: u32,
     /// Additional options
     pub extra_options: Vec<String>,
 }
@@ -166,8 +169,12 @@ impl ClientConfig {
             "# Security settings".to_string(),
             "tls-client".to_string(),
             "tls-version-min 1.3".to_string(),
-            "".to_string(),
         ];
+
+        if self.reneg_sec > 0 {
+            lines.push(format!("reneg-sec {}", self.reneg_sec));
+        }
+        lines.push("".to_string());
 
         // Add extra options
         for opt in &self.extra_options {
@@ -234,6 +241,7 @@ pub struct ClientConfigBuilder {
     cipher: String,
     auth: String,
     key_direction: Option<u8>,
+    reneg_sec: u32,
     extra_options: Vec<String>,
 }
 
@@ -253,6 +261,7 @@ impl ClientConfigBuilder {
             cipher: "AES-256-GCM".to_string(),
             auth: "SHA256".to_string(),
             key_direction: Some(1),
+            reneg_sec: 0,
             extra_options: vec![],
         }
     }
@@ -313,6 +322,12 @@ impl ClientConfigBuilder {
         self
     }
 
+    /// Set renegotiation interval in seconds
+    pub fn reneg_sec(mut self, secs: u32) -> Self {
+        self.reneg_sec = secs;
+        self
+    }
+
     /// Build the configuration
     pub fn build(self) -> ClientConfig {
         ClientConfig {
@@ -328,6 +343,7 @@ impl ClientConfigBuilder {
             cipher: self.cipher,
             auth: self.auth,
             key_direction: self.key_direction,
+            reneg_sec: self.reneg_sec,
             extra_options: self.extra_options,
         }
     }

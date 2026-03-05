@@ -149,9 +149,12 @@ pub struct VpnServer {
 impl VpnServer {
     /// Create a new VPN server
     pub async fn new(config: ServerConfig) -> Result<Self> {
+        let session_lifetime_sec = config.oauth.as_ref()
+            .map(|o| o.session_lifetime_sec as i64)
+            .unwrap_or(86400);
         let session_manager = SessionManager::new(
             config.server.max_clients as usize,
-            chrono::Duration::hours(24),
+            chrono::Duration::seconds(session_lifetime_sec),
         );
 
         let subnet = config.network.subnet.parse()
@@ -383,11 +386,14 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
 
     // Spawn cleanup task
     let server_cleanup = server.clone();
+    let idle_timeout_sec = config.server.idle_timeout_sec;
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
-            cleanup_stale_connections(&server_cleanup, Duration::from_secs(300)).await;
+            if idle_timeout_sec > 0 {
+                cleanup_stale_connections(&server_cleanup, Duration::from_secs(idle_timeout_sec)).await;
+            }
         }
     });
 
@@ -903,6 +909,9 @@ async fn handle_control_packet(
 
                                                 push_reply.ping = 10;
                                                 push_reply.ping_restart = 60;
+
+                                                // Push renegotiation interval from config
+                                                push_reply.options.push(format!("reneg-sec {}", server.config.security.reneg_sec));
 
                                                 // Push negotiated cipher for NCP
                                                 push_reply.options.push(format!("cipher {}", negotiated_cipher));

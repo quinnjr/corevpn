@@ -52,6 +52,13 @@ pub struct ServerSettings {
     /// Data directory
     #[serde(default = "default_data_dir")]
     pub data_dir: PathBuf,
+    /// Idle timeout in seconds before a connection is dropped (0 = no idle timeout)
+    #[serde(default = "default_idle_timeout")]
+    pub idle_timeout_sec: u64,
+}
+
+fn default_idle_timeout() -> u64 {
+    300 // 5 minutes
 }
 
 fn default_listen_addr() -> SocketAddr {
@@ -201,6 +208,13 @@ pub struct OAuthSettings {
     /// If not set, the URL is built from public_host and oauth_port with HTTPS.
     #[serde(default)]
     pub external_url: Option<String>,
+    /// Maximum session lifetime in seconds before re-authentication is required (0 = unlimited)
+    #[serde(default = "default_session_lifetime")]
+    pub session_lifetime_sec: u64,
+}
+
+fn default_session_lifetime() -> u64 {
+    86400 // 24 hours
 }
 
 fn default_oauth_port() -> u16 {
@@ -642,6 +656,7 @@ impl ServerConfig {
                 protocol: default_protocol(),
                 max_clients: default_max_clients(),
                 data_dir: default_data_dir(),
+                idle_timeout_sec: default_idle_timeout(),
             },
             network: NetworkSettings {
                 subnet: default_subnet(),

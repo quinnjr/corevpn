@@ -428,6 +428,7 @@ fn setup_google_oauth(theme: &ColorfulTheme) -> Result<corevpn_config::server::O
         required_groups: vec![],
         oauth_port: 9000,
         external_url: None,
+        session_lifetime_sec: 86400,
     })
 }
 
@@ -466,6 +467,7 @@ fn setup_microsoft_oauth(theme: &ColorfulTheme) -> Result<corevpn_config::server
         required_groups: vec![],
         oauth_port: 9000,
         external_url: None,
+        session_lifetime_sec: 86400,
     })
 }
 
@@ -502,5 +504,6 @@ fn setup_okta_oauth(theme: &ColorfulTheme) -> Result<corevpn_config::server::OAu
         required_groups: vec![],
         oauth_port: 9000,
         external_url: None,
+        session_lifetime_sec: 86400,
     })
 }
