@@ -70,7 +70,7 @@ webpki-roots = "0.26"
 tun = { version = "0.6", features = ["async"] }
 
 # OAuth2/OIDC
-openidconnect = "3"
+openidconnect = "4"
 oauth2 = "4"
 
 # HTTP client/server
