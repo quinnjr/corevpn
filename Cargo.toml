@@ -54,7 +54,7 @@ rand_core = "0.6"
 
 # Secure memory handling
 zeroize = { version = "1", features = ["derive"] }
-secrecy = "0.8"
+secrecy = "0.10"
 
 # Certificates
 x509-cert = "0.2"
