@@ -67,7 +67,7 @@ tokio-rustls = "0.26"
 webpki-roots = "0.26"
 
 # TUN device
-tun = { version = "0.6", features = ["async"] }
+tun = { version = "0.8", features = ["async"] }
 
 # HTTP client/server
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
