@@ -91,7 +91,7 @@ ratatui = "0.28"
 # GUI
 rfd = "0.15"
 egui = "0.31"
-eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "persistence"] }
+eframe = { version = "0.32", default-features = false, features = ["default_fonts", "glow", "persistence"] }
 
 # Logging & tracing
 tracing = "0.1"
