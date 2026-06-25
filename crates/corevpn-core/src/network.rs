@@ -65,7 +65,7 @@ impl Route {
     pub fn new(network: IpNet) -> Result<Self> {
         // Validate network
         Self::validate_network(&network)?;
-        
+
         Ok(Self {
             network,
             gateway: None,
@@ -222,11 +222,11 @@ impl AddressPool {
             )));
         }
 
-        // Ensure network is not a loopback or multicast address
+        // Ensure network is not a loopback, unspecified, or multicast address
         let network_addr = net.network();
-        if network_addr.is_loopback() {
+        if network_addr.is_loopback() || network_addr.is_unspecified() {
             return Err(CoreError::ConfigError(
-                "IPv4 network cannot be a loopback address".into(),
+                "IPv4 network cannot be a loopback or unspecified address".into(),
             ));
         }
         if network_addr.is_multicast() {
@@ -262,11 +262,13 @@ impl AddressPool {
             )));
         }
 
-        // Ensure network is not a loopback or multicast address
+        // Ensure network is not a loopback, unspecified, or multicast address.
+        // Note: a pool such as `::1/64` masks to the `::` (unspecified) network,
+        // which must also be rejected.
         let network_addr = net.network();
-        if network_addr.is_loopback() {
+        if network_addr.is_loopback() || network_addr.is_unspecified() {
             return Err(CoreError::ConfigError(
-                "IPv6 network cannot be a loopback address".into(),
+                "IPv6 network cannot be a loopback or unspecified address".into(),
             ));
         }
         if network_addr.is_multicast() {
@@ -288,16 +290,14 @@ impl AddressPool {
 
     /// Get the gateway IPv4 address
     pub fn gateway_v4(&self) -> Option<Ipv4Addr> {
-        self.ipv4_net.map(|net| {
-            Ipv4Addr::from(u32::from(net.network()) + 1)
-        })
+        self.ipv4_net
+            .map(|net| Ipv4Addr::from(u32::from(net.network()) + 1))
     }
 
     /// Get the gateway IPv6 address
     pub fn gateway_v6(&self) -> Option<Ipv6Addr> {
-        self.ipv6_net.map(|net| {
-            Ipv6Addr::from(u128::from(net.network()) + 1)
-        })
+        self.ipv6_net
+            .map(|net| Ipv6Addr::from(u128::from(net.network()) + 1))
     }
 
     /// Allocate an address from the pool
@@ -474,7 +474,7 @@ impl Default for DnsConfig {
     fn default() -> Self {
         Self {
             servers: vec![
-                "1.1.1.1".parse().unwrap(),  // Cloudflare
+                "1.1.1.1".parse().unwrap(), // Cloudflare
                 "1.0.0.1".parse().unwrap(),
             ],
             search_domains: vec![],
@@ -488,10 +488,7 @@ mod tests {
 
     #[test]
     fn test_address_pool() {
-        let pool = AddressPool::new(
-            Some("10.8.0.0/24".parse().unwrap()),
-            None,
-        ).unwrap();
+        let pool = AddressPool::new(Some("10.8.0.0/24".parse().unwrap()), None).unwrap();
 
         // First allocation should be .2
         let addr1 = pool.allocate().unwrap();
@@ -514,7 +511,8 @@ mod tests {
         let pool = AddressPool::new(
             Some("10.8.0.0/24".parse().unwrap()),
             Some("fd00::/64".parse().unwrap()),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(pool.gateway_v4(), Some("10.8.0.1".parse().unwrap()));
         assert_eq!(pool.gateway_v6(), Some("fd00::1".parse().unwrap()));
@@ -522,7 +520,8 @@ mod tests {
 
     #[test]
     fn test_route() {
-        let route = Route::new("192.168.1.0/24".parse().unwrap()).unwrap()
+        let route = Route::new("192.168.1.0/24".parse().unwrap())
+            .unwrap()
             .with_gateway("10.8.0.1".parse().unwrap())
             .with_metric(100);
 
@@ -535,15 +534,15 @@ mod tests {
         // Test invalid IPv4 prefix length
         assert!(AddressPool::new(Some("10.8.0.0/7".parse().unwrap()), None).is_err());
         assert!(AddressPool::new(Some("10.8.0.0/31".parse().unwrap()), None).is_err());
-        
+
         // Test invalid IPv6 prefix length
         assert!(AddressPool::new(None, Some("fd00::/47".parse().unwrap())).is_err());
         assert!(AddressPool::new(None, Some("fd00::/121".parse().unwrap())).is_err());
-        
+
         // Test loopback addresses
         assert!(AddressPool::new(Some("127.0.0.0/24".parse().unwrap()), None).is_err());
         assert!(AddressPool::new(None, Some("::1/64".parse().unwrap())).is_err());
-        
+
         // Test valid addresses
         assert!(AddressPool::new(Some("10.8.0.0/24".parse().unwrap()), None).is_ok());
         assert!(AddressPool::new(None, Some("fd00::/64".parse().unwrap())).is_ok());

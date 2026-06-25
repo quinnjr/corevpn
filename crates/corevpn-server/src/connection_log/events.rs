@@ -32,7 +32,7 @@ impl std::fmt::Display for ConnectionId {
 }
 
 /// Authentication method used
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthMethod {
     /// Certificate-based authentication
@@ -46,17 +46,12 @@ pub enum AuthMethod {
     /// Pre-shared key
     Psk,
     /// Unknown/not yet determined
+    #[default]
     Unknown,
 }
 
-impl Default for AuthMethod {
-    fn default() -> Self {
-        Self::Unknown
-    }
-}
-
 /// Reason for disconnection
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DisconnectReason {
     /// Client initiated clean disconnect
@@ -80,13 +75,8 @@ pub enum DisconnectReason {
     /// Key renegotiation failure
     RenegotiationFailure,
     /// Unknown reason
+    #[default]
     Unknown,
-}
-
-impl Default for DisconnectReason {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 /// Authentication result
@@ -124,6 +114,7 @@ pub struct TransferStats {
     pub packets_tx: u64,
 }
 
+#[allow(dead_code)] // Convenience accessors retained for future reporting use.
 impl TransferStats {
     pub fn total_bytes(&self) -> u64 {
         self.bytes_rx + self.bytes_tx
@@ -233,6 +224,7 @@ pub enum ConnectionEvent {
 
 impl ConnectionEvent {
     /// Get the connection ID for this event
+    #[allow(dead_code)] // Accessor retained for future query/reporting use.
     pub fn connection_id(&self) -> ConnectionId {
         match self {
             Self::ConnectionAttempt { connection_id, .. } => *connection_id,
@@ -257,6 +249,7 @@ impl ConnectionEvent {
     }
 
     /// Get the event type as a string
+    #[allow(dead_code)] // Accessor retained for future query/reporting use.
     pub fn event_type(&self) -> &'static str {
         match self {
             Self::ConnectionAttempt { .. } => "connection_attempt",
@@ -269,6 +262,7 @@ impl ConnectionEvent {
     }
 
     /// Get the client address for this event (if available)
+    #[allow(dead_code)] // Accessor retained for future query/reporting use.
     pub fn client_addr(&self) -> Option<SocketAddr> {
         match self {
             Self::ConnectionAttempt { client_addr, .. } => Some(*client_addr),
@@ -328,6 +322,7 @@ impl ConnectionEventBuilder {
         }
     }
 
+    #[allow(dead_code)] // Builder variant retained for future event emission.
     pub fn connected(
         self,
         client_addr: SocketAddr,
@@ -365,6 +360,7 @@ impl ConnectionEventBuilder {
         }
     }
 
+    #[allow(dead_code)] // Builder variant retained for future event emission.
     pub fn ip_change(
         self,
         old_addr: SocketAddr,

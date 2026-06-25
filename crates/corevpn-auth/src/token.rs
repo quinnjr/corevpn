@@ -1,11 +1,11 @@
 //! Token Management and Validation
 
 use chrono::{DateTime, Utc};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use parking_lot::RwLock;
+use std::time::{Duration, SystemTime};
 use tracing::{debug, warn};
 
 use crate::{AuthError, Result};
@@ -113,6 +113,8 @@ struct JwkSet {
 }
 
 /// Individual JWK
+// `alg` and `key_use` are deserialized from JWKS for completeness but not consulted yet.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 struct Jwk {
     /// Key ID
@@ -177,7 +179,8 @@ impl JwksCache {
 
     fn insert(&mut self, jwks_uri: String, jwks: JwkSet) {
         let expires_at = SystemTime::now() + self.ttl;
-        self.entries.insert(jwks_uri, JwksCacheEntry { jwks, expires_at });
+        self.entries
+            .insert(jwks_uri, JwksCacheEntry { jwks, expires_at });
     }
 
     fn clear_expired(&mut self) {
@@ -237,7 +240,11 @@ impl TokenValidator {
     ///
     /// Note: For production, you should also verify the JWT signature
     /// using the provider's JWKS.
-    pub fn validate_claims(&self, claims: &IdTokenClaims, expected_nonce: Option<&str>) -> Result<()> {
+    pub fn validate_claims(
+        &self,
+        claims: &IdTokenClaims,
+        expected_nonce: Option<&str>,
+    ) -> Result<()> {
         // Check issuer
         if claims.iss != self.issuer {
             return Err(AuthError::TokenValidationFailed(format!(
@@ -289,7 +296,8 @@ impl TokenValidator {
 
         // Fetch from network
         debug!("Fetching JWKS from {}", jwks_uri);
-        let response = self.http_client
+        let response = self
+            .http_client
             .get(jwks_uri)
             .send()
             .await
@@ -319,28 +327,35 @@ impl TokenValidator {
 
     /// Verify JWT signature using JWKS
     async fn verify_signature(&self, token: &str) -> Result<()> {
-        let jwks_uri = self.jwks_uri.as_ref()
+        let jwks_uri = self
+            .jwks_uri
+            .as_ref()
             .ok_or_else(|| AuthError::TokenValidationFailed("JWKS URI not configured".into()))?;
 
         // Decode header to get key ID
         let header = jsonwebtoken::decode_header(token)
             .map_err(|e| AuthError::TokenValidationFailed(format!("Invalid JWT header: {}", e)))?;
 
-        let kid = header.kid.ok_or_else(|| {
-            AuthError::TokenValidationFailed("JWT missing key ID (kid)".into())
-        })?;
+        let kid = header
+            .kid
+            .ok_or_else(|| AuthError::TokenValidationFailed("JWT missing key ID (kid)".into()))?;
 
         // Fetch JWKS
         let jwks = self.fetch_jwks(jwks_uri).await?;
 
         // Find the key by kid
-        let jwk = jwks.keys.iter()
+        let jwk = jwks
+            .keys
+            .iter()
             .find(|k| k.kid.as_deref() == Some(&kid))
-            .ok_or_else(|| AuthError::TokenValidationFailed(format!("Key {} not found in JWKS", kid)))?;
+            .ok_or_else(|| {
+                AuthError::TokenValidationFailed(format!("Key {} not found in JWKS", kid))
+            })?;
 
         // Convert to decoding key
-        let decoding_key = jwk.to_decoding_key()
-            .map_err(|e| AuthError::TokenValidationFailed(e))?;
+        let decoding_key = jwk
+            .to_decoding_key()
+            .map_err(AuthError::TokenValidationFailed)?;
 
         // Verify signature using jsonwebtoken
         let mut validation = jsonwebtoken::Validation::new(header.alg);
@@ -349,7 +364,12 @@ impl TokenValidator {
         validation.leeway = self.clock_skew as u64;
 
         let _decoded = jsonwebtoken::decode::<serde_json::Value>(token, &decoding_key, &validation)
-            .map_err(|e| AuthError::TokenValidationFailed(format!("JWT signature verification failed: {}", e)))?;
+            .map_err(|e| {
+                AuthError::TokenValidationFailed(format!(
+                    "JWT signature verification failed: {}",
+                    e
+                ))
+            })?;
 
         Ok(())
     }
@@ -377,7 +397,9 @@ impl TokenValidator {
 
         let parts: Vec<&str> = token.split('.').collect();
         if parts.len() != 3 {
-            return Err(AuthError::TokenValidationFailed("invalid JWT format".into()));
+            return Err(AuthError::TokenValidationFailed(
+                "invalid JWT format".into(),
+            ));
         }
 
         let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -488,7 +510,15 @@ mod tests {
             additional: HashMap::new(),
         };
 
-        assert!(validator.validate_claims(&claims, Some("test-nonce")).is_ok());
-        assert!(validator.validate_claims(&claims, Some("wrong-nonce")).is_err());
+        assert!(
+            validator
+                .validate_claims(&claims, Some("test-nonce"))
+                .is_ok()
+        );
+        assert!(
+            validator
+                .validate_claims(&claims, Some("wrong-nonce"))
+                .is_err()
+        );
     }
 }

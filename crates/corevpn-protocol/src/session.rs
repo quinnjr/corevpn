@@ -6,12 +6,11 @@ use bytes::Bytes;
 
 use corevpn_crypto::{CipherSuite, KeyMaterial};
 
-use crate::{
-    KeyId, OpCode, Packet, DataPacket, DataChannel,
-    ReliableTransport, ReliableConfig, TlsRecordReassembler,
-    ProtocolError, Result,
-};
 use crate::packet::ControlPacketData;
+use crate::{
+    DataChannel, DataPacket, KeyId, OpCode, Packet, ProtocolError, ReliableConfig,
+    ReliableTransport, Result, TlsRecordReassembler,
+};
 
 /// Protocol session state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,8 +233,8 @@ impl ProtocolSession {
                     // Build HMAC input: pid + time + opcode + session_id + rest
                     let mut hmac_input = Vec::with_capacity(8 + 9 + data.len() - 49);
                     hmac_input.extend_from_slice(&data[41..49]); // pid(4) + time(4)
-                    hmac_input.extend_from_slice(&data[0..9]);   // opcode(1) + session_id(8)
-                    hmac_input.extend_from_slice(&data[49..]);   // rest
+                    hmac_input.extend_from_slice(&data[0..9]); // opcode(1) + session_id(8)
+                    hmac_input.extend_from_slice(&data[49..]); // rest
 
                     key.verify(&hmac_input, &hmac)?;
                 }
@@ -333,7 +332,10 @@ impl ProtocolSession {
         }
     }
 
-    fn process_data_packet(&mut self, data_pkt: crate::packet::DataPacketData) -> Result<ProcessedPacket> {
+    fn process_data_packet(
+        &mut self,
+        data_pkt: crate::packet::DataPacketData,
+    ) -> Result<ProcessedPacket> {
         let packet = DataPacket {
             key_id: data_pkt.header.key_id,
             peer_id: data_pkt.peer_id,
@@ -407,6 +409,7 @@ impl ProtocolSession {
     /// - 20 bytes HMAC (if tls-auth)
     /// - 8 bytes packet_id + timestamp (if tls-auth)
     /// - 20 bytes IP header + 8 bytes UDP header
+    ///
     /// Total overhead ~82 bytes, so 1100 + 82 = 1182 < 1500 MTU
     const MAX_CONTROL_PAYLOAD: usize = 1100;
 
@@ -623,11 +626,11 @@ impl ProtocolSession {
 
                 // Build wire format: [opcode+session_id] [HMAC] [pid] [time] [rest]
                 let mut output = Vec::with_capacity(data.len() + 32 + 8);
-                output.extend_from_slice(&data[0..9]);       // opcode(1) + session_id(8)
-                output.extend_from_slice(&hmac);              // HMAC(32)
-                output.extend_from_slice(&pid_bytes);         // pid(4)
-                output.extend_from_slice(&time_bytes);        // time(4)
-                output.extend_from_slice(&data[9..]);         // rest (ack_stuff, msg_pid, payload)
+                output.extend_from_slice(&data[0..9]); // opcode(1) + session_id(8)
+                output.extend_from_slice(&hmac); // HMAC(32)
+                output.extend_from_slice(&pid_bytes); // pid(4)
+                output.extend_from_slice(&time_bytes); // time(4)
+                output.extend_from_slice(&data[9..]); // rest (ack_stuff, msg_pid, payload)
 
                 return Bytes::from(output);
             }
@@ -714,7 +717,11 @@ mod tests {
         // [10-13] ack_id[0] (4 bytes, value 0)
         // [14-21] remote_session_id (8 bytes)
         // [22-25] message_packet_id (4 bytes, value 0)
-        assert!(response.len() >= 26, "Response too short: {} bytes", response.len());
+        assert!(
+            response.len() >= 26,
+            "Response too short: {} bytes",
+            response.len()
+        );
 
         // Verify opcode is HardResetServerV2 (opcode=8, key_id=0 → 0x40)
         assert_eq!(response[0], 0x40);

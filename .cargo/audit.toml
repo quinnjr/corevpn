@@ -1,0 +1,26 @@
+# cargo-audit configuration
+# https://github.com/rustsec/rustsec/blob/main/cargo-audit/audit.toml.example
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071: Marvin Attack timing side-channel in `rsa`.
+    # `rsa` is NOT compiled by this workspace: it is only an optional,
+    # feature-gated dependency of sqlx's MySQL/Postgres backends, and we
+    # enable only the `sqlite` backend (see workspace `sqlx` features).
+    # `cargo tree -i rsa` reports the crate is unreachable in the build graph;
+    # it lingers only as an unreferenced Cargo.lock entry. No fixed upgrade
+    # exists upstream. Safe to ignore as it is never linked into our binaries.
+    "RUSTSEC-2023-0071",
+
+    # RUSTSEC-2026-0009: DoS via stack exhaustion in the `time` crate's RFC 2822
+    # date parser (fixed in time >=0.3.47). The fix is intentionally NOT applied
+    # because time 0.3.47 raises the required Rust toolchain to 1.88, above this
+    # project's declared MSRV of 1.85 (see workspace `rust-version` and the
+    # `MSRV Check (Rust 1.85)` CI job). `time` is pulled only transitively via
+    # rcgen/yasna (X.509 generation) and jsonwebtoken; none of these parse
+    # untrusted RFC 2822 strings, so the vulnerable code path is unreachable
+    # with attacker-controlled input here.
+    # DECISION REQUIRED: to drop this ignore, bump the workspace MSRV to >=1.88
+    # and update the CI MSRV job, then `cargo update -p time`.
+    "RUSTSEC-2026-0009",
+]

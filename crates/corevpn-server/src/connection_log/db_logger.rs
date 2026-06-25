@@ -10,8 +10,8 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use sqlx::Row;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use tracing::info;
 
 use super::events::{
@@ -333,6 +333,7 @@ impl DatabaseConnectionLogger {
         Ok(deleted)
     }
 
+    #[allow(dead_code)] // Used by query_recent/query_connection, which are not yet wired up.
     fn parse_event_row(row: &sqlx::sqlite::SqliteRow) -> Option<ConnectionEvent> {
         let event_type: String = row.try_get("event_type").ok()?;
         let connection_id_str: String = row.try_get("connection_id").ok()?;
@@ -456,6 +457,7 @@ impl DatabaseConnectionLogger {
     }
 }
 
+#[allow(dead_code)] // Parsing helper retained for the not-yet-wired query path.
 fn parse_auth_method(s: &str) -> AuthMethod {
     match s.to_lowercase().as_str() {
         "certificate" => AuthMethod::Certificate,
@@ -467,6 +469,7 @@ fn parse_auth_method(s: &str) -> AuthMethod {
     }
 }
 
+#[allow(dead_code)] // Parsing helper retained for the not-yet-wired query path.
 fn parse_auth_result(s: &str) -> AuthResult {
     match s.to_lowercase().as_str() {
         "success" => AuthResult::Success,
@@ -480,6 +483,7 @@ fn parse_auth_result(s: &str) -> AuthResult {
     }
 }
 
+#[allow(dead_code)] // Parsing helper retained for the not-yet-wired query path.
 fn parse_disconnect_reason(s: &str) -> DisconnectReason {
     match s.to_lowercase().as_str() {
         "clientdisconnect" => DisconnectReason::ClientDisconnect,
@@ -527,17 +531,12 @@ impl ConnectionLogger for DatabaseConnectionLogger {
     }
 
     async fn query_recent(&self, limit: usize) -> Result<Option<Vec<ConnectionEvent>>> {
-        let rows = sqlx::query(
-            "SELECT * FROM connection_events ORDER BY timestamp DESC LIMIT ?",
-        )
-        .bind(limit as i64)
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = sqlx::query("SELECT * FROM connection_events ORDER BY timestamp DESC LIMIT ?")
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?;
 
-        let events: Vec<ConnectionEvent> = rows
-            .iter()
-            .filter_map(|row| Self::parse_event_row(row))
-            .collect();
+        let events: Vec<ConnectionEvent> = rows.iter().filter_map(Self::parse_event_row).collect();
 
         Ok(Some(events))
     }
@@ -550,10 +549,7 @@ impl ConnectionLogger for DatabaseConnectionLogger {
         .fetch_all(&self.pool)
         .await?;
 
-        let events: Vec<ConnectionEvent> = rows
-            .iter()
-            .filter_map(|row| Self::parse_event_row(row))
-            .collect();
+        let events: Vec<ConnectionEvent> = rows.iter().filter_map(Self::parse_event_row).collect();
 
         Ok(Some(events))
     }
@@ -567,10 +563,7 @@ impl ConnectionLogger for DatabaseConnectionLogger {
         self.purge_old_events().await?;
 
         // Vacuum to reclaim space
-        sqlx::query("VACUUM")
-            .execute(&self.pool)
-            .await
-            .ok(); // Don't fail on vacuum errors
+        sqlx::query("VACUUM").execute(&self.pool).await.ok(); // Don't fail on vacuum errors
 
         Ok(())
     }
@@ -578,7 +571,7 @@ impl ConnectionLogger for DatabaseConnectionLogger {
     fn stats(&self) -> LoggerStats {
         LoggerStats {
             events_logged: self.total_logged.load(Ordering::Relaxed),
-            pending_events: 0, // Database has no pending events
+            pending_events: 0,   // Database has no pending events
             storage_bytes: None, // Would need to query file size
             oldest_event: *self.first_event.read(),
             newest_event: *self.last_event.read(),

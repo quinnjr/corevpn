@@ -74,7 +74,12 @@ pub fn logs_view(ui: &mut egui::Ui, state: &mut AppState) {
 
     // Log level legend
     ui.horizontal(|ui| {
-        for level in [LogLevel::Debug, LogLevel::Info, LogLevel::Warn, LogLevel::Error] {
+        for level in [
+            LogLevel::Debug,
+            LogLevel::Info,
+            LogLevel::Warn,
+            LogLevel::Error,
+        ] {
             ui.label(egui::RichText::new("*").color(level.color()));
             ui.label(egui::RichText::new(level.as_str()).size(11.0));
             ui.add_space(8.0);

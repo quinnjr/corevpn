@@ -14,9 +14,9 @@
 
 pub mod auth;
 pub mod csrf;
-pub mod templates;
 pub mod routes;
 pub mod state;
+pub mod templates;
 
 pub use auth::{ADMIN_PASSWORD_ENV, ADMIN_USERNAME, is_auth_configured};
 pub use routes::create_router;

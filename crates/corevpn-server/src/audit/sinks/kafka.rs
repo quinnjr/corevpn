@@ -1,6 +1,6 @@
 //! Kafka Audit Sink
 
-use super::{AuditSink, AuditError, AuditEvent};
+use super::{AuditError, AuditEvent, AuditSink};
 use crate::audit::formats::{FormatConfig, FormatEncoder};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -62,10 +62,18 @@ pub struct KafkaConfig {
     pub linger_ms: u32,
 }
 
-fn default_batch_size() -> usize { 100 }
-fn default_acks() -> String { "all".to_string() }
-fn default_linger() -> u32 { 5 }
+fn default_batch_size() -> usize {
+    100
+}
+fn default_acks() -> String {
+    "all".to_string()
+}
+fn default_linger() -> u32 {
+    5
+}
 
+// Fields retained for future Kafka message keying/payload wiring.
+#[allow(dead_code)]
 struct KafkaMessage {
     key: Option<String>,
     value: String,

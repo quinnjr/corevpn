@@ -7,9 +7,9 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use axum::response::Html;
 use axum::Json;
-use console::{style, Emoji, Term};
+use axum::response::Html;
+use console::{Emoji, Term, style};
 use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
 
 use corevpn_config::{ServerConfig, generator::initialize_pki};
@@ -79,7 +79,10 @@ pub async fn run_interactive_setup(data_dir: &Path) -> Result<()> {
         _ => Input::with_theme(&theme)
             .with_prompt("  Enter custom port")
             .validate_with(|input: &String| {
-                input.parse::<u16>().map(|_| ()).map_err(|_| "Invalid port number")
+                input
+                    .parse::<u16>()
+                    .map(|_| ())
+                    .map_err(|_| "Invalid port number")
             })
             .interact_text()?
             .parse()?,
@@ -102,7 +105,11 @@ pub async fn run_interactive_setup(data_dir: &Path) -> Result<()> {
         .default(0)
         .interact()?;
 
-    let protocol = if protocol_selection == 0 { "udp" } else { "tcp" };
+    let protocol = if protocol_selection == 0 {
+        "udp"
+    } else {
+        "tcp"
+    };
 
     println!();
 
@@ -160,7 +167,11 @@ pub async fn run_interactive_setup(data_dir: &Path) -> Result<()> {
     println!();
     println!("  {} Server: {}:{}/{}", GLOBE, public_host, port, protocol);
     println!("  {} Subnet: {}", GEAR, subnet);
-    println!("  {} Full tunnel: {}", LOCK, if redirect_gateway { "Yes" } else { "No" });
+    println!(
+        "  {} Full tunnel: {}",
+        LOCK,
+        if redirect_gateway { "Yes" } else { "No" }
+    );
     if oauth_config.is_some() {
         println!("  {} OAuth2: Enabled", KEY);
     }
@@ -183,23 +194,19 @@ pub async fn run_interactive_setup(data_dir: &Path) -> Result<()> {
 
     // Create directories
     let config_dir = PathBuf::from("/etc/corevpn");
-    std::fs::create_dir_all(&config_dir)
-        .context("Failed to create config directory")?;
-    std::fs::create_dir_all(data_dir)
-        .context("Failed to create data directory")?;
+    std::fs::create_dir_all(&config_dir).context("Failed to create config directory")?;
+    std::fs::create_dir_all(data_dir).context("Failed to create data directory")?;
 
     print!("  Generating PKI (certificates)... ");
     io::stdout().flush()?;
-    let (_ca, _ta_key) = initialize_pki(data_dir, &public_host, "CoreVPN")
-        .context("Failed to initialize PKI")?;
+    let (_ca, _ta_key) =
+        initialize_pki(data_dir, &public_host, "CoreVPN").context("Failed to initialize PKI")?;
     println!("{}", CHECK);
 
     // Build config
     let mut config = ServerConfig::default_config(&public_host);
-    config.server.listen_addr = SocketAddr::new(
-        std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
-        port,
-    );
+    config.server.listen_addr =
+        SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), port);
     config.server.protocol = protocol.to_string();
     config.server.data_dir = data_dir.to_path_buf();
     config.network.subnet = subnet;
@@ -213,7 +220,8 @@ pub async fn run_interactive_setup(data_dir: &Path) -> Result<()> {
     print!("  Saving configuration... ");
     io::stdout().flush()?;
     let config_path = config_dir.join("config.toml");
-    config.save(&config_path)
+    config
+        .save(&config_path)
         .context("Failed to save configuration")?;
     println!("{}", CHECK);
 
@@ -229,7 +237,10 @@ pub async fn run_interactive_setup(data_dir: &Path) -> Result<()> {
     println!("     {}", style("sudo corevpn-server run").cyan());
     println!();
     println!("  2. Generate a client config:");
-    println!("     {}", style("corevpn-server client -u user@example.com").cyan());
+    println!(
+        "     {}",
+        style("corevpn-server client -u user@example.com").cyan()
+    );
     println!();
     println!("  3. Import the .ovpn file into your VPN client");
     println!();
@@ -253,8 +264,6 @@ pub async fn run_web_setup(_data_dir: &Path) -> Result<()> {
         Router,
         routing::{get, post},
     };
-    
-    
 
     println!();
     println!("  {}CoreVPN Web Setup", ROCKET);
@@ -282,7 +291,8 @@ pub async fn run_web_setup(_data_dir: &Path) -> Result<()> {
 }
 
 async fn setup_page() -> Html<&'static str> {
-    Html(r#"
+    Html(
+        r#"
 <!DOCTYPE html>
 <html>
 <head>
@@ -357,7 +367,8 @@ async fn setup_page() -> Html<&'static str> {
     </script>
 </body>
 </html>
-"#)
+"#,
+    )
 }
 
 async fn handle_setup(Json(_data): Json<serde_json::Value>) -> Json<serde_json::Value> {
@@ -424,7 +435,11 @@ fn setup_google_oauth(theme: &ColorfulTheme) -> Result<corevpn_config::server::O
         issuer_url: None,
         tenant_id: None,
         domain: None,
-        allowed_domains: if domain.is_empty() { vec![] } else { vec![domain] },
+        allowed_domains: if domain.is_empty() {
+            vec![]
+        } else {
+            vec![domain]
+        },
         required_groups: vec![],
         oauth_port: 9000,
         external_url: None,

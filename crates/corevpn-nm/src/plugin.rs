@@ -70,10 +70,8 @@ impl VpnPlugin {
     /// Start a VPN connection with the given NM connection settings.
     async fn connect(
         &self,
-        #[zbus(connection)]
-        conn: &zbus::Connection,
-        #[zbus(signal_emitter)]
-        emitter: SignalEmitter<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         connection_settings: HashMap<String, HashMap<String, OwnedValue>>,
     ) -> zbus::fdo::Result<()> {
         info!("Connect called by NetworkManager");
@@ -86,12 +84,15 @@ impl VpnPlugin {
         info!("Config file: {}", nm_settings.config_path.display());
 
         let ovpn_content = std::fs::read_to_string(&nm_settings.config_path).map_err(|e| {
-            zbus::fdo::Error::InvalidArgs(format!("Cannot read {}: {}", nm_settings.config_path.display(), e))
+            zbus::fdo::Error::InvalidArgs(format!(
+                "Cannot read {}: {}",
+                nm_settings.config_path.display(),
+                e
+            ))
         })?;
 
-        let config = OvpnConfig::parse(&ovpn_content).map_err(|e| {
-            zbus::fdo::Error::InvalidArgs(format!("Invalid .ovpn: {}", e))
-        })?;
+        let config = OvpnConfig::parse(&ovpn_content)
+            .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("Invalid .ovpn: {}", e)))?;
 
         // Cancel any existing connection
         {
@@ -109,7 +110,9 @@ impl VpnPlugin {
         let inner = self.inner.clone();
 
         let task = tokio::spawn(async move {
-            if let Err(e) = run_vpn_connection(config, server_addr, conn.clone(), inner.clone()).await {
+            if let Err(e) =
+                run_vpn_connection(config, server_addr, conn.clone(), inner.clone()).await
+            {
                 error!("VPN connection failed: {}", e);
                 emit_failure_signals(&conn, &inner).await;
             }
@@ -122,10 +125,8 @@ impl VpnPlugin {
     /// Interactive connect — delegates to Connect.
     async fn connect_interactive(
         &self,
-        #[zbus(connection)]
-        conn: &zbus::Connection,
-        #[zbus(signal_emitter)]
-        emitter: SignalEmitter<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         connection_settings: HashMap<String, HashMap<String, OwnedValue>>,
         _details: HashMap<String, OwnedValue>,
     ) -> zbus::fdo::Result<()> {
@@ -143,8 +144,7 @@ impl VpnPlugin {
     /// Disconnect the active VPN connection.
     async fn disconnect(
         &self,
-        #[zbus(signal_emitter)]
-        emitter: SignalEmitter<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<()> {
         info!("Disconnect called by NetworkManager");
 
@@ -170,8 +170,7 @@ impl VpnPlugin {
     /// Set generic VPN config — emits Config signal.
     async fn set_config(
         &self,
-        #[zbus(signal_emitter)]
-        emitter: SignalEmitter<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         config: HashMap<String, OwnedValue>,
     ) -> zbus::fdo::Result<()> {
         Self::config(&emitter, config)
@@ -182,8 +181,7 @@ impl VpnPlugin {
     /// Set IPv4 config — emits Ip4Config signal.
     async fn set_ip4_config(
         &self,
-        #[zbus(signal_emitter)]
-        emitter: SignalEmitter<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         config: HashMap<String, OwnedValue>,
     ) -> zbus::fdo::Result<()> {
         Self::ip4_config(&emitter, config)
@@ -194,8 +192,7 @@ impl VpnPlugin {
     /// Set IPv6 config — emits Ip6Config signal.
     async fn set_ip6_config(
         &self,
-        #[zbus(signal_emitter)]
-        emitter: SignalEmitter<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         config: HashMap<String, OwnedValue>,
     ) -> zbus::fdo::Result<()> {
         Self::ip6_config(&emitter, config)
@@ -206,8 +203,7 @@ impl VpnPlugin {
     /// Report a failure reason.
     async fn set_failure(
         &self,
-        #[zbus(signal_emitter)]
-        emitter: SignalEmitter<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         reason: &str,
     ) -> zbus::fdo::Result<()> {
         error!("SetFailure: {}", reason);
@@ -337,7 +333,9 @@ async fn run_vpn_connection(
                 config_dict.insert("has-ip4".into(), OwnedValue::from(ifconfig.is_some()));
                 config_dict.insert("has-ip6".into(), OwnedValue::from(false));
 
-                iface_ref.config(config_dict).await
+                iface_ref
+                    .config(config_dict)
+                    .await
                     .map_err(|e| anyhow::anyhow!("Failed to emit Config: {}", e))?;
 
                 // Emit Ip4Config signal
@@ -382,14 +380,18 @@ async fn run_vpn_connection(
 
                     ip4.insert("never-default".into(), OwnedValue::from(!redirect_gateway));
 
-                    iface_ref.ip4_config(ip4).await
+                    iface_ref
+                        .ip4_config(ip4)
+                        .await
                         .map_err(|e| anyhow::anyhow!("Failed to emit Ip4Config: {}", e))?;
                 }
             }
 
             ConnectionEvent::Connected { tun_name } => {
                 info!("VPN connected on {}, emitting STARTED", tun_name);
-                iface_ref.state_changed(NM_VPN_STATE_STARTED).await
+                iface_ref
+                    .state_changed(NM_VPN_STATE_STARTED)
+                    .await
                     .map_err(|e| anyhow::anyhow!("Failed to emit StateChanged: {}", e))?;
                 inner.lock().await.state = NM_VPN_STATE_STARTED;
             }

@@ -40,25 +40,25 @@ impl ClientConfig {
     /// Validate PEM format
     fn validate_pem(content: &str, expected_type: &str) -> Result<(), crate::ConfigError> {
         let content = content.trim();
-        
+
         // Check for proper PEM headers/footers
         let header = format!("-----BEGIN {}", expected_type);
-        let footer = format!("-----END {}", expected_type);
-        
+        let footer = format!("-----END {}-----", expected_type);
+
         if !content.starts_with(&header) {
             return Err(crate::ConfigError::ValidationError(format!(
                 "Invalid PEM format: missing BEGIN {} header",
                 expected_type
             )));
         }
-        
+
         if !content.ends_with(&footer) {
             return Err(crate::ConfigError::ValidationError(format!(
                 "Invalid PEM format: missing END {} footer",
                 expected_type
             )));
         }
-        
+
         // Basic validation: ensure there's content between headers
         // Find the end of the header line
         let header_line_end = content.find('\n').or_else(|| content.find('\r'));
@@ -81,7 +81,7 @@ impl ClientConfig {
                 }
             }
         }
-        
+
         Ok(())
     }
 
@@ -90,22 +90,23 @@ impl ClientConfig {
         // Validate CA certificate
         Self::validate_pem(&self.ca_cert, "CERTIFICATE")
             .map_err(|e| crate::ConfigError::ValidationError(format!("CA certificate: {}", e)))?;
-        
+
         // Validate client certificate
-        Self::validate_pem(&self.client_cert, "CERTIFICATE")
-            .map_err(|e| crate::ConfigError::ValidationError(format!("Client certificate: {}", e)))?;
-        
+        Self::validate_pem(&self.client_cert, "CERTIFICATE").map_err(|e| {
+            crate::ConfigError::ValidationError(format!("Client certificate: {}", e))
+        })?;
+
         // Validate client key (can be PRIVATE KEY or RSA PRIVATE KEY)
         let key_valid = Self::validate_pem(&self.client_key, "PRIVATE KEY").is_ok()
             || Self::validate_pem(&self.client_key, "RSA PRIVATE KEY").is_ok()
             || Self::validate_pem(&self.client_key, "EC PRIVATE KEY").is_ok();
-        
+
         if !key_valid {
             return Err(crate::ConfigError::ValidationError(
                 "Client key: Invalid PEM format - must be PRIVATE KEY, RSA PRIVATE KEY, or EC PRIVATE KEY".into(),
             ));
         }
-        
+
         // Validate tls-auth key if present
         if let Some(ta_key) = &self.tls_auth_key {
             if ta_key.trim().is_empty() {
@@ -121,7 +122,7 @@ impl ClientConfig {
                 ));
             }
         }
-        
+
         // Validate tls-crypt key if present
         if let Some(tc_key) = &self.tls_crypt_key {
             if tc_key.trim().is_empty() {
@@ -135,12 +136,12 @@ impl ClientConfig {
                 ));
             }
         }
-        
+
         Ok(())
     }
 
     /// Generate .ovpn file contents
-    /// 
+    ///
     /// # Panics
     /// Panics if the configuration is invalid. Use `validate()` before calling this method
     /// to check for errors without panicking.
@@ -219,7 +220,9 @@ impl ClientConfig {
     pub fn to_ovpn_mobile(&self) -> String {
         // Same as regular but with mobile-optimized settings
         let mut config = self.clone();
-        config.extra_options.push("# Mobile optimizations".to_string());
+        config
+            .extra_options
+            .push("# Mobile optimizations".to_string());
         config.extra_options.push("connect-retry 2".to_string());
         config.extra_options.push("connect-retry-max 5".to_string());
         config.extra_options.push("auth-retry interact".to_string());

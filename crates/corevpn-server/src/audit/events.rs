@@ -337,7 +337,11 @@ impl AuditEventBuilder {
     }
 
     /// Set target with type and ID
-    pub fn target_resource(mut self, target_type: impl Into<String>, id: impl Into<String>) -> Self {
+    pub fn target_resource(
+        mut self,
+        target_type: impl Into<String>,
+        id: impl Into<String>,
+    ) -> Self {
         self.target = Some(AuditTarget {
             target_type: target_type.into(),
             id: Some(id.into()),
@@ -429,7 +433,10 @@ impl AuditEventBuilder {
         Self::new(AuditCategory::Authentication)
             .action("auth.success")
             .actor_user(username, source_ip.clone())
-            .message(format!("User {} authenticated successfully via {}", username, method))
+            .message(format!(
+                "User {} authenticated successfully via {}",
+                username, method
+            ))
             .data("auth_method", method)
     }
 
@@ -440,7 +447,10 @@ impl AuditEventBuilder {
             .severity(AuditSeverity::Medium)
             .actor_user(username, source_ip)
             .failure("AUTH_FAILED", reason)
-            .message(format!("Authentication failed for user {}: {}", username, reason))
+            .message(format!(
+                "Authentication failed for user {}: {}",
+                username, reason
+            ))
     }
 
     /// VPN connection established
@@ -454,11 +464,19 @@ impl AuditEventBuilder {
     }
 
     /// VPN connection terminated
-    pub fn vpn_disconnect(username: &str, source_ip: &str, reason: &str, duration_secs: u64) -> Self {
+    pub fn vpn_disconnect(
+        username: &str,
+        source_ip: &str,
+        reason: &str,
+        duration_secs: u64,
+    ) -> Self {
         Self::new(AuditCategory::Connection)
             .action("vpn.disconnect")
             .actor_user(username, Some(source_ip.to_string()))
-            .message(format!("VPN connection terminated for {}: {}", username, reason))
+            .message(format!(
+                "VPN connection terminated for {}: {}",
+                username, reason
+            ))
             .data("disconnect_reason", reason)
             .data("session_duration_secs", duration_secs)
     }

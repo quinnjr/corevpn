@@ -43,27 +43,33 @@ impl HmacAuth {
     /// Create from OpenVPN ta.key format (2048-bit / 256 bytes)
     ///
     /// OpenVPN ta.key maps to the key2 struct layout:
-    ///   struct key { uint8_t cipher[64]; uint8_t hmac[64]; };
-    ///   struct key2 { int n; struct key keys[2]; };
+    /// ```c
+    /// struct key { uint8_t cipher[64]; uint8_t hmac[64]; };
+    /// struct key2 { int n; struct key keys[2]; };
+    /// ```
     ///
     /// Layout:
-    /// - Bytes   0-63:  keys[0].cipher (unused for tls-auth)
-    /// - Bytes  64-127: keys[0].hmac   (HMAC key for key-direction 0)
-    /// - Bytes 128-191: keys[1].cipher (unused for tls-auth)
-    /// - Bytes 192-255: keys[1].hmac   (HMAC key for key-direction 1)
+    /// - Bytes   0-63:  `keys[0].cipher` (unused for tls-auth)
+    /// - Bytes  64-127: `keys[0].hmac`   (HMAC key for key-direction 0)
+    /// - Bytes 128-191: `keys[1].cipher` (unused for tls-auth)
+    /// - Bytes 192-255: `keys[1].hmac`   (HMAC key for key-direction 1)
     ///
     /// Key direction determines which key index is used for encrypt/decrypt:
-    /// - key_direction 0: encrypt with keys[0], decrypt with keys[1]
-    /// - key_direction 1: encrypt with keys[1], decrypt with keys[0]
-    pub fn from_ta_key(ta_key: &[u8; 256], is_server: bool, key_direction: Option<u8>) -> Result<Self> {
+    /// - key_direction 0: encrypt with `keys[0]`, decrypt with `keys[1]`
+    /// - key_direction 1: encrypt with `keys[1]`, decrypt with `keys[0]`
+    pub fn from_ta_key(
+        ta_key: &[u8; 256],
+        is_server: bool,
+        key_direction: Option<u8>,
+    ) -> Result<Self> {
         let (tx_key, rx_key) = match (is_server, key_direction) {
             // Server with key-direction 0 (normal/default)
             // encrypt with keys[0].hmac, decrypt with keys[1].hmac
             (true, Some(0)) | (true, None) => {
                 let mut tx = [0u8; 32];
                 let mut rx = [0u8; 32];
-                tx.copy_from_slice(&ta_key[64..96]);    // keys[0].hmac
-                rx.copy_from_slice(&ta_key[192..224]);   // keys[1].hmac
+                tx.copy_from_slice(&ta_key[64..96]); // keys[0].hmac
+                rx.copy_from_slice(&ta_key[192..224]); // keys[1].hmac
                 (tx, rx)
             }
             // Server with key-direction 1 (reversed)
@@ -71,8 +77,8 @@ impl HmacAuth {
             (true, Some(1)) => {
                 let mut tx = [0u8; 32];
                 let mut rx = [0u8; 32];
-                tx.copy_from_slice(&ta_key[192..224]);   // keys[1].hmac
-                rx.copy_from_slice(&ta_key[64..96]);     // keys[0].hmac
+                tx.copy_from_slice(&ta_key[192..224]); // keys[1].hmac
+                rx.copy_from_slice(&ta_key[64..96]); // keys[0].hmac
                 (tx, rx)
             }
             // Client with key-direction 1 (normal for client)
@@ -80,8 +86,8 @@ impl HmacAuth {
             (false, Some(1)) | (false, None) => {
                 let mut tx = [0u8; 32];
                 let mut rx = [0u8; 32];
-                tx.copy_from_slice(&ta_key[192..224]);   // keys[1].hmac
-                rx.copy_from_slice(&ta_key[64..96]);     // keys[0].hmac
+                tx.copy_from_slice(&ta_key[192..224]); // keys[1].hmac
+                rx.copy_from_slice(&ta_key[64..96]); // keys[0].hmac
                 (tx, rx)
             }
             // Client with key-direction 0 (reversed for client)
@@ -89,15 +95,15 @@ impl HmacAuth {
             (false, Some(0)) => {
                 let mut tx = [0u8; 32];
                 let mut rx = [0u8; 32];
-                tx.copy_from_slice(&ta_key[64..96]);     // keys[0].hmac
-                rx.copy_from_slice(&ta_key[192..224]);   // keys[1].hmac
+                tx.copy_from_slice(&ta_key[64..96]); // keys[0].hmac
+                rx.copy_from_slice(&ta_key[192..224]); // keys[1].hmac
                 (tx, rx)
             }
             _ => {
-                return Err(CryptoError::InvalidPem(
-                    format!("Invalid key direction: is_server={}, key_direction={:?}", 
-                            is_server, key_direction)
-                ));
+                return Err(CryptoError::InvalidPem(format!(
+                    "Invalid key direction: is_server={}, key_direction={:?}",
+                    is_server, key_direction
+                )));
             }
         };
 
@@ -106,16 +112,16 @@ impl HmacAuth {
 
     /// Compute HMAC for an outgoing packet
     pub fn authenticate(&self, data: &[u8]) -> [u8; 32] {
-        let mut mac = HmacSha256::new_from_slice(&self.tx_key)
-            .expect("HMAC key size is always valid");
+        let mut mac =
+            HmacSha256::new_from_slice(&self.tx_key).expect("HMAC key size is always valid");
         mac.update(data);
         mac.finalize().into_bytes().into()
     }
 
     /// Verify HMAC for an incoming packet (constant-time)
     pub fn verify(&self, data: &[u8], expected_hmac: &[u8; 32]) -> Result<()> {
-        let mut mac = HmacSha256::new_from_slice(&self.rx_key)
-            .expect("HMAC key size is always valid");
+        let mut mac =
+            HmacSha256::new_from_slice(&self.rx_key).expect("HMAC key size is always valid");
         mac.update(data);
         let computed = mac.finalize().into_bytes();
 
@@ -161,7 +167,10 @@ pub struct TlsCryptKey {
 impl TlsCryptKey {
     /// Create from raw keys
     pub fn new(cipher_key: [u8; 32], hmac_key: [u8; 32]) -> Self {
-        Self { cipher_key, hmac_key }
+        Self {
+            cipher_key,
+            hmac_key,
+        }
     }
 
     /// Create from a 512-bit (64-byte) combined key
@@ -170,7 +179,10 @@ impl TlsCryptKey {
         let mut hmac_key = [0u8; 32];
         cipher_key.copy_from_slice(&key[0..32]);
         hmac_key.copy_from_slice(&key[32..64]);
-        Self { cipher_key, hmac_key }
+        Self {
+            cipher_key,
+            hmac_key,
+        }
     }
 
     /// Get the cipher key
@@ -187,8 +199,8 @@ impl TlsCryptKey {
     ///
     /// Format: [HMAC-SHA256(ciphertext) | IV | ciphertext]
     pub fn wrap(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
-        use crate::cipher::Cipher;
         use crate::CipherSuite;
+        use crate::cipher::Cipher;
 
         // Generate random IV
         let cipher = Cipher::new(&self.cipher_key, CipherSuite::ChaCha20Poly1305);
@@ -202,8 +214,8 @@ impl TlsCryptKey {
         hmac_input.extend_from_slice(&nonce);
         hmac_input.extend_from_slice(&ciphertext);
 
-        let mut mac = HmacSha256::new_from_slice(&self.hmac_key)
-            .expect("HMAC key size is always valid");
+        let mut mac =
+            HmacSha256::new_from_slice(&self.hmac_key).expect("HMAC key size is always valid");
         mac.update(&hmac_input);
         let hmac = mac.finalize().into_bytes();
 
@@ -218,8 +230,8 @@ impl TlsCryptKey {
 
     /// Unwrap tls-crypt protected packet
     pub fn unwrap(&self, packet: &[u8]) -> Result<Vec<u8>> {
-        use crate::cipher::Cipher;
         use crate::CipherSuite;
+        use crate::cipher::Cipher;
 
         if packet.len() < 32 + 12 + 16 {
             return Err(CryptoError::DecryptionFailed);
@@ -229,8 +241,8 @@ impl TlsCryptKey {
         let (nonce, ciphertext) = rest.split_at(12);
 
         // Verify HMAC first (constant-time)
-        let mut mac = HmacSha256::new_from_slice(&self.hmac_key)
-            .expect("HMAC key size is always valid");
+        let mut mac =
+            HmacSha256::new_from_slice(&self.hmac_key).expect("HMAC key size is always valid");
         mac.update(nonce);
         mac.update(ciphertext);
         let computed = mac.finalize().into_bytes();

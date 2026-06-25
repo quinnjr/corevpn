@@ -5,17 +5,16 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs, rust_2018_idioms)]
 
-pub mod server;
 pub mod client;
 pub mod generator;
+pub mod server;
 
-pub use server::{
-    ServerConfig, LoggingSettings, ConnectionLogMode,
-    ConnectionLogEvents, ConnectionLogAnonymization, ConnectionLogRetention,
-    AuditSettings, AuditSinkConfig,
-};
 pub use client::{ClientConfig, ClientConfigBuilder};
 pub use generator::ConfigGenerator;
+pub use server::{
+    AuditSettings, AuditSinkConfig, ConnectionLogAnonymization, ConnectionLogEvents,
+    ConnectionLogMode, ConnectionLogRetention, LoggingSettings, ServerConfig,
+};
 
 use thiserror::Error;
 

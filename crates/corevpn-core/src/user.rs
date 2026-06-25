@@ -154,9 +154,7 @@ impl User {
 
     /// Check if user is expired
     pub fn is_expired(&self) -> bool {
-        self.expires_at
-            .map(|exp| Utc::now() > exp)
-            .unwrap_or(false)
+        self.expires_at.map(|exp| Utc::now() > exp).unwrap_or(false)
     }
 
     /// Check if user can connect
@@ -340,8 +338,7 @@ mod tests {
     async fn test_memory_user_store() {
         let store = MemoryUserStore::new();
 
-        let user = User::new(UserId::from_email("test@example.com"))
-            .with_email("test@example.com");
+        let user = User::new(UserId::from_email("test@example.com")).with_email("test@example.com");
 
         store.upsert_user(&user).await.unwrap();
 

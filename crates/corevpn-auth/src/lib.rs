@@ -10,18 +10,18 @@
 #![warn(missing_docs, rust_2018_idioms)]
 
 pub mod error;
-pub mod provider;
 pub mod flow;
-pub mod token;
+pub mod provider;
 pub mod session;
+pub mod token;
 
 pub use error::{AuthError, Result};
-pub use provider::{OAuthProvider, ProviderConfig, ProviderType};
 pub use flow::{AuthFlow, AuthState, DeviceAuthFlow};
-pub use token::{TokenSet, TokenValidator, UserInfo};
+pub use provider::{OAuthProvider, ProviderConfig, ProviderType};
 pub use session::{AuthSession, AuthSessionManager};
+pub use token::{TokenSet, TokenValidator, UserInfo};
 
-use secrecy::{Secret, SecretString};
+use secrecy::SecretString;
 
 /// Supported OAuth2 providers with pre-configured settings
 #[derive(Clone)]
@@ -76,12 +76,14 @@ impl KnownProvider {
             KnownProvider::Microsoft { tenant_id, .. } => {
                 format!("https://login.microsoftonline.com/{}/v2.0", tenant_id)
             }
-            KnownProvider::Okta { domain, auth_server_id, .. } => {
-                match auth_server_id {
-                    Some(id) => format!("https://{}/oauth2/{}", domain, id),
-                    None => format!("https://{}/oauth2/default", domain),
-                }
-            }
+            KnownProvider::Okta {
+                domain,
+                auth_server_id,
+                ..
+            } => match auth_server_id {
+                Some(id) => format!("https://{}/oauth2/{}", domain, id),
+                None => format!("https://{}/oauth2/default", domain),
+            },
             KnownProvider::Generic { issuer_url, .. } => issuer_url.clone(),
         }
     }

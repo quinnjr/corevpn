@@ -3,13 +3,13 @@
 //! Bridges rustls with the OpenVPN control channel transport.
 //! Supports both server-side and client-side TLS connections.
 
-use std::io::{Read, Write, ErrorKind};
+use std::io::{ErrorKind, Read, Write};
 use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
-use rustls::{ServerConfig, ServerConnection, ClientConfig, ClientConnection};
-use rustls::client::danger::{ServerCertVerifier, ServerCertVerified, HandshakeSignatureValid};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use rustls::{ClientConfig, ClientConnection, ServerConfig, ServerConnection};
 
 use crate::{ProtocolError, Result};
 
@@ -28,8 +28,8 @@ pub struct TlsHandler {
 impl TlsHandler {
     /// Create a new TLS handler with server configuration
     pub fn new(config: Arc<ServerConfig>) -> Result<Self> {
-        let conn = ServerConnection::new(config)
-            .map_err(|e| ProtocolError::TlsError(e.to_string()))?;
+        let conn =
+            ServerConnection::new(config).map_err(|e| ProtocolError::TlsError(e.to_string()))?;
 
         Ok(Self {
             conn,
@@ -144,21 +144,24 @@ impl TlsHandler {
         label: &[u8],
         context: Option<&[u8]>,
     ) -> Result<()> {
-        self.conn.export_keying_material(output, label, context)
+        self.conn
+            .export_keying_material(output, label, context)
             .map_err(|e| ProtocolError::TlsError(format!("EKM export failed: {}", e)))?;
         Ok(())
     }
 
     /// Get peer certificate if available
     pub fn peer_certificates(&self) -> Option<Vec<CertificateDer<'static>>> {
-        self.conn.peer_certificates().map(|certs| {
-            certs.iter().map(|c| c.clone().into_owned()).collect()
-        })
+        self.conn
+            .peer_certificates()
+            .map(|certs| certs.iter().map(|c| c.clone().into_owned()).collect())
     }
 
     /// Get negotiated cipher suite name
     pub fn cipher_suite(&self) -> Option<&'static str> {
-        self.conn.negotiated_cipher_suite().map(|cs| cs.suite().as_str().unwrap_or("unknown"))
+        self.conn
+            .negotiated_cipher_suite()
+            .map(|cs| cs.suite().as_str().unwrap_or("unknown"))
     }
 
     /// Get negotiated TLS protocol version
@@ -220,7 +223,12 @@ pub fn load_certs_from_pem(pem: &str) -> Result<Vec<CertificateDer<'static>>> {
     for cert in rustls_pemfile::certs(&mut pem.as_bytes()) {
         match cert {
             Ok(c) => certs.push(c),
-            Err(e) => return Err(ProtocolError::TlsError(format!("Failed to parse cert: {}", e))),
+            Err(e) => {
+                return Err(ProtocolError::TlsError(format!(
+                    "Failed to parse cert: {}",
+                    e
+                )));
+            }
         }
     }
     Ok(certs)
@@ -237,7 +245,9 @@ pub fn load_key_from_pem(pem: &str) -> Result<PrivateKeyDer<'static>> {
             _ => continue,
         }
     }
-    Err(ProtocolError::TlsError("No private key found in PEM".into()))
+    Err(ProtocolError::TlsError(
+        "No private key found in PEM".into(),
+    ))
 }
 
 /// TLS client handler for OpenVPN connections (client-side)
@@ -362,14 +372,17 @@ impl TlsClientHandler {
         label: &[u8],
         context: Option<&[u8]>,
     ) -> Result<()> {
-        self.conn.export_keying_material(output, label, context)
+        self.conn
+            .export_keying_material(output, label, context)
             .map_err(|e| ProtocolError::TlsError(format!("EKM export failed: {}", e)))?;
         Ok(())
     }
 
     /// Get negotiated cipher suite name
     pub fn cipher_suite(&self) -> Option<&'static str> {
-        self.conn.negotiated_cipher_suite().map(|cs| cs.suite().as_str().unwrap_or("unknown"))
+        self.conn
+            .negotiated_cipher_suite()
+            .map(|cs| cs.suite().as_str().unwrap_or("unknown"))
     }
 
     /// Get negotiated TLS protocol version
@@ -414,13 +427,16 @@ impl ServerCertVerifier for CoreVpnServerVerifier {
 
         // Verify the chain against our root store using webpki
         // We accept the cert if it chains to our CA, regardless of EKU or server name
-        let trust_anchors: Vec<_> = self.roots.roots.iter().map(|ta| {
-            rustls::pki_types::TrustAnchor {
+        let trust_anchors: Vec<_> = self
+            .roots
+            .roots
+            .iter()
+            .map(|ta| rustls::pki_types::TrustAnchor {
                 subject: ta.subject.clone(),
                 subject_public_key_info: ta.subject_public_key_info.clone(),
                 name_constraints: ta.name_constraints.clone(),
-            }
-        }).collect();
+            })
+            .collect();
 
         if trust_anchors.is_empty() {
             return Err(rustls::Error::General("no trust anchors configured".into()));
@@ -477,9 +493,9 @@ pub fn create_client_config(
 ) -> Result<Arc<ClientConfig>> {
     let mut root_store = rustls::RootCertStore::empty();
     for cert in ca_certs {
-        root_store.add(cert).map_err(|e| ProtocolError::TlsError(
-            format!("Failed to add CA cert to root store: {}", e),
-        ))?;
+        root_store.add(cert).map_err(|e| {
+            ProtocolError::TlsError(format!("Failed to add CA cert to root store: {}", e))
+        })?;
     }
 
     let verifier = Arc::new(CoreVpnServerVerifier::new(Arc::new(root_store)));
@@ -502,8 +518,6 @@ pub fn create_client_config(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     // Basic test - just verifies compilation
     #[test]
     fn test_tls_handler_creation() {

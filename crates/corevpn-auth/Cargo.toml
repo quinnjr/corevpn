@@ -20,10 +20,6 @@ corevpn-core = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 
-# OAuth2/OIDC
-openidconnect = { workspace = true }
-oauth2 = { workspace = true }
-
 # HTTP
 reqwest = { workspace = true }
 

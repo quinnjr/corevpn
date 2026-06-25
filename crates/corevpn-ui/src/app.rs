@@ -69,17 +69,13 @@ impl CoreVpnApp {
 
     /// Start a VPN connection using the active profile.
     pub fn start_connection(&mut self) {
-        let config_path = self
-            .state
-            .active_profile
-            .as_ref()
-            .and_then(|name| {
-                self.state
-                    .profiles
-                    .iter()
-                    .find(|p| &p.name == name)
-                    .and_then(|p| p.config_path.clone())
-            });
+        let config_path = self.state.active_profile.as_ref().and_then(|name| {
+            self.state
+                .profiles
+                .iter()
+                .find(|p| &p.name == name)
+                .and_then(|p| p.config_path.clone())
+        });
 
         if let Some(path) = config_path {
             self.state.start_connecting();
@@ -168,17 +164,11 @@ impl eframe::App for CoreVpnApp {
             .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(16, 10)))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.heading(
-                        egui::RichText::new("CoreVPN")
-                            .strong()
-                            .size(20.0),
-                    );
+                    ui.heading(egui::RichText::new("CoreVPN").strong().size(20.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Status indicator
                         let status = self.state.connection.status;
-                        let dot = egui::RichText::new("●")
-                            .color(status.color())
-                            .size(14.0);
+                        let dot = egui::RichText::new("●").color(status.color()).size(14.0);
                         ui.label(dot);
                         ui.label(
                             egui::RichText::new(status.as_str())
@@ -201,25 +191,13 @@ impl eframe::App for CoreVpnApp {
                         |ui| {
                             ui.spacing_mut().item_spacing.x = 40.0;
 
-                            if nav_button(
-                                ui,
-                                "Home",
-                                current_view == AppView::Connection,
-                            ) {
+                            if nav_button(ui, "Home", current_view == AppView::Connection) {
                                 self.state.current_view = AppView::Connection;
                             }
-                            if nav_button(
-                                ui,
-                                "Profiles",
-                                current_view == AppView::Profiles,
-                            ) {
+                            if nav_button(ui, "Profiles", current_view == AppView::Profiles) {
                                 self.state.current_view = AppView::Profiles;
                             }
-                            if nav_button(
-                                ui,
-                                "Settings",
-                                current_view == AppView::Settings,
-                            ) {
+                            if nav_button(ui, "Settings", current_view == AppView::Settings) {
                                 self.state.current_view = AppView::Settings;
                             }
                         },
@@ -229,19 +207,22 @@ impl eframe::App for CoreVpnApp {
 
         // Central panel with main content
         egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                match self.state.current_view {
-                    AppView::Connection => {
-                        views::connection_view(ui, &mut self.state, &mut self.backend, &mut self.pending_file);
-                    }
-                    AppView::ServerList => views::server_list_view(ui, &mut self.state),
-                    AppView::Settings => views::settings_view(ui, &mut self.state),
-                    AppView::Profiles => {
-                        views::profiles_view(ui, &mut self.state, &mut self.pending_file);
-                    }
-                    AppView::Logs => views::logs_view(ui, &mut self.state),
-                    AppView::About => views::about_view(ui, &mut self.state),
+            egui::ScrollArea::vertical().show(ui, |ui| match self.state.current_view {
+                AppView::Connection => {
+                    views::connection_view(
+                        ui,
+                        &mut self.state,
+                        &mut self.backend,
+                        &mut self.pending_file,
+                    );
                 }
+                AppView::ServerList => views::server_list_view(ui, &mut self.state),
+                AppView::Settings => views::settings_view(ui, &mut self.state),
+                AppView::Profiles => {
+                    views::profiles_view(ui, &mut self.state, &mut self.pending_file);
+                }
+                AppView::Logs => views::logs_view(ui, &mut self.state),
+                AppView::About => views::about_view(ui, &mut self.state),
             });
         });
 
@@ -268,9 +249,8 @@ fn nav_button(ui: &mut egui::Ui, label: &str, active: bool) -> bool {
         egui::Color32::GRAY
     };
 
-    let response = ui.add(
-        egui::Button::new(egui::RichText::new(label).size(13.0).color(color)).frame(false),
-    );
+    let response =
+        ui.add(egui::Button::new(egui::RichText::new(label).size(13.0).color(color)).frame(false));
 
     response.clicked()
 }

@@ -1,6 +1,6 @@
 //! HTTP Webhook Audit Sink
 
-use super::{AuditSink, AuditError, AuditEvent};
+use super::{AuditError, AuditEvent, AuditSink};
 use crate::audit::formats::{FormatConfig, FormatEncoder};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -54,12 +54,24 @@ pub struct WebhookConfig {
     pub batch_as_array: bool,
 }
 
-fn default_method() -> String { "POST".to_string() }
-fn default_batch_size() -> usize { 100 }
-fn default_timeout() -> u64 { 30 }
-fn default_retries() -> u32 { 3 }
-fn default_retry_delay() -> u64 { 1000 }
-fn default_true() -> bool { true }
+fn default_method() -> String {
+    "POST".to_string()
+}
+fn default_batch_size() -> usize {
+    100
+}
+fn default_timeout() -> u64 {
+    30
+}
+fn default_retries() -> u32 {
+    3
+}
+fn default_retry_delay() -> u64 {
+    1000
+}
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -119,11 +131,12 @@ impl WebhookSink {
                     &base64::engine::general_purpose::STANDARD,
                     format!("{}:{}", username, password),
                 );
-                Some(("Authorization".to_string(), format!("Basic {}", credentials)))
+                Some((
+                    "Authorization".to_string(),
+                    format!("Basic {}", credentials),
+                ))
             }
-            Some(WebhookAuth::ApiKey { header, value }) => {
-                Some((header.clone(), value.clone()))
-            }
+            Some(WebhookAuth::ApiKey { header, value }) => Some((header.clone(), value.clone())),
             _ => None,
         }
     }

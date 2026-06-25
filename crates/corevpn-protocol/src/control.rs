@@ -190,21 +190,19 @@ impl PushReply {
                 Some("redirect-gateway") => {
                     reply.redirect_gateway = true;
                 }
-                Some("dhcp-option") => {
-                    match tokens.next() {
-                        Some("DNS") => {
-                            if let Some(dns) = tokens.next() {
-                                reply.dns.push(dns.to_string());
-                            }
+                Some("dhcp-option") => match tokens.next() {
+                    Some("DNS") => {
+                        if let Some(dns) = tokens.next() {
+                            reply.dns.push(dns.to_string());
                         }
-                        Some("DOMAIN") => {
-                            if let Some(domain) = tokens.next() {
-                                reply.dns_search.push(domain.to_string());
-                            }
-                        }
-                        _ => {}
                     }
-                }
+                    Some("DOMAIN") => {
+                        if let Some(domain) = tokens.next() {
+                            reply.dns_search.push(domain.to_string());
+                        }
+                    }
+                    _ => {}
+                },
                 Some("ping") => {
                     if let Some(Ok(p)) = tokens.next().map(|s| s.parse()) {
                         reply.ping = p;
@@ -271,7 +269,7 @@ impl PushRoute {
         let network_str = tokens
             .next()
             .ok_or_else(|| ProtocolError::InvalidPacket("missing network in route".into()))?;
-        
+
         // Validate network address
         validate_ipv4(network_str)?;
         let network = network_str.to_string();
@@ -279,7 +277,7 @@ impl PushRoute {
         let netmask_str = tokens
             .next()
             .ok_or_else(|| ProtocolError::InvalidPacket("missing netmask in route".into()))?;
-        
+
         // Validate netmask
         validate_ipv4(netmask_str)?;
         let netmask = netmask_str.to_string();
@@ -375,14 +373,16 @@ impl AuthMessage {
 
         // Validate lengths
         if username.len() > Self::MAX_USERNAME_LEN {
-            return Err(ProtocolError::InvalidPacket(
-                format!("username too long (max {} bytes)", Self::MAX_USERNAME_LEN).into(),
-            ));
+            return Err(ProtocolError::InvalidPacket(format!(
+                "username too long (max {} bytes)",
+                Self::MAX_USERNAME_LEN
+            )));
         }
         if password.len() > Self::MAX_PASSWORD_LEN {
-            return Err(ProtocolError::InvalidPacket(
-                format!("password too long (max {} bytes)", Self::MAX_PASSWORD_LEN).into(),
-            ));
+            return Err(ProtocolError::InvalidPacket(format!(
+                "password too long (max {} bytes)",
+                Self::MAX_PASSWORD_LEN
+            )));
         }
 
         Ok(Self {
@@ -452,9 +452,10 @@ impl KeyMethodV2 {
         let key_method = data[offset];
         offset += 1;
         if key_method != 2 {
-            return Err(ProtocolError::InvalidPacket(
-                format!("unsupported key method: {}", key_method),
-            ));
+            return Err(ProtocolError::InvalidPacket(format!(
+                "unsupported key method: {}",
+                key_method
+            )));
         }
 
         // Pre-master secret (48 bytes)
@@ -536,9 +537,10 @@ impl KeyMethodV2 {
         let key_method = data[offset];
         offset += 1;
         if key_method != 2 {
-            return Err(ProtocolError::InvalidPacket(
-                format!("unsupported key method: {}", key_method),
-            ));
+            return Err(ProtocolError::InvalidPacket(format!(
+                "unsupported key method: {}",
+                key_method
+            )));
         }
 
         // Server does NOT send pre_master - only random1 and random2
@@ -659,11 +661,15 @@ mod tests {
 
     #[test]
     fn test_push_reply_roundtrip() {
-        let mut reply = PushReply::default();
-        reply.ifconfig = Some(("10.8.0.2".to_string(), "255.255.255.0".to_string()));
+        let mut reply = PushReply {
+            ifconfig: Some(("10.8.0.2".to_string(), "255.255.255.0".to_string())),
+            redirect_gateway: true,
+            ..Default::default()
+        };
         reply.dns.push("1.1.1.1".to_string());
-        reply.routes.push(PushRoute::new("192.168.1.0", "255.255.255.0"));
-        reply.redirect_gateway = true;
+        reply
+            .routes
+            .push(PushRoute::new("192.168.1.0", "255.255.255.0"));
 
         let encoded = reply.encode();
         let parsed = PushReply::parse(&encoded).unwrap();

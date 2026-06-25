@@ -1,6 +1,6 @@
 //! Splunk HEC Audit Sink
 
-use super::{AuditSink, AuditError, AuditEvent};
+use super::{AuditError, AuditEvent, AuditSink};
 use crate::audit::formats::{FormatConfig, FormatEncoder};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -54,11 +54,21 @@ pub struct SplunkConfig {
     pub channel: Option<String>,
 }
 
-fn default_sourcetype() -> String { "corevpn:audit".to_string() }
-fn default_source() -> String { "corevpn".to_string() }
-fn default_true() -> bool { true }
-fn default_batch_size() -> usize { 100 }
-fn default_flush_interval() -> u64 { 5 }
+fn default_sourcetype() -> String {
+    "corevpn:audit".to_string()
+}
+fn default_source() -> String {
+    "corevpn".to_string()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_batch_size() -> usize {
+    100
+}
+fn default_flush_interval() -> u64 {
+    5
+}
 
 /// Splunk HEC sink
 pub struct SplunkSink {

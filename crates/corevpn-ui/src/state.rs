@@ -39,10 +39,7 @@ impl std::fmt::Debug for AuthState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotAuthenticated => f.debug_tuple("NotAuthenticated").finish(),
-            Self::AwaitingSso { url } => f
-                .debug_struct("AwaitingSso")
-                .field("url", url)
-                .finish(),
+            Self::AwaitingSso { url } => f.debug_struct("AwaitingSso").field("url", url).finish(),
             Self::Authenticated {
                 email,
                 name,

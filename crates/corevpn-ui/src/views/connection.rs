@@ -35,14 +35,11 @@ pub fn connection_view(
                     ui.set_min_width(280.0);
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new(&profile.name).size(14.0).strong());
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                if ui.small_button("Change").clicked() {
-                                    state.current_view = AppView::Profiles;
-                                }
-                            },
-                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("Change").clicked() {
+                                state.current_view = AppView::Profiles;
+                            }
+                        });
                     });
                     ui.label(
                         egui::RichText::new(format!(
@@ -170,23 +167,19 @@ fn connection_card(ui: &mut egui::Ui, state: &mut AppState, backend: &mut VpnBac
 
                         if ui.add_enabled(has_profile, btn).clicked() {
                             // Find the active profile's config path
-                            let config_path = state
-                                .active_profile
-                                .as_ref()
-                                .and_then(|name| {
-                                    state
-                                        .profiles
-                                        .iter()
-                                        .find(|p| &p.name == name)
-                                        .and_then(|p| p.config_path.clone())
-                                });
+                            let config_path = state.active_profile.as_ref().and_then(|name| {
+                                state
+                                    .profiles
+                                    .iter()
+                                    .find(|p| &p.name == name)
+                                    .and_then(|p| p.config_path.clone())
+                            });
 
                             if let Some(path) = config_path {
                                 state.start_connecting();
                                 backend.connect(path);
                             } else {
-                                state
-                                    .set_error("Profile has no config file path");
+                                state.set_error("Profile has no config file path");
                             }
                         }
                     }
@@ -228,9 +221,7 @@ fn connection_stats(ui: &mut egui::Ui, stats: &ConnectionStats) {
                     .size(11.0)
                     .color(egui::Color32::GRAY),
             );
-            ui.label(
-                egui::RichText::new(ConnectionStats::format_bytes(stats.bytes_rx)).size(14.0),
-            );
+            ui.label(egui::RichText::new(ConnectionStats::format_bytes(stats.bytes_rx)).size(14.0));
         });
 
         ui.add_space(40.0);
@@ -241,9 +232,7 @@ fn connection_stats(ui: &mut egui::Ui, stats: &ConnectionStats) {
                     .size(11.0)
                     .color(egui::Color32::GRAY),
             );
-            ui.label(
-                egui::RichText::new(ConnectionStats::format_bytes(stats.bytes_tx)).size(14.0),
-            );
+            ui.label(egui::RichText::new(ConnectionStats::format_bytes(stats.bytes_tx)).size(14.0));
         });
     });
 

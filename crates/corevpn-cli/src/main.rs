@@ -150,8 +150,10 @@ async fn main() -> Result<()> {
 
             // Parse .ovpn config
             let ovpn_config = ovpn::OvpnConfig::parse_file(&config)?;
-            info!("Loaded config: remote={}, cipher={}, proto={}",
-                ovpn_config.remote, ovpn_config.cipher, ovpn_config.protocol);
+            info!(
+                "Loaded config: remote={}, cipher={}, proto={}",
+                ovpn_config.remote, ovpn_config.cipher, ovpn_config.protocol
+            );
 
             // Create and run VPN client
             let vpn_client = client::VpnClient::new(ovpn_config);

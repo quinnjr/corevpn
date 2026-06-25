@@ -2,16 +2,11 @@
 //!
 //! Generates and validates CSRF tokens for POST requests.
 
-use axum::{
-    extract::Request,
-    http::StatusCode,
-    middleware::Next,
-    response::Response,
-};
-use std::collections::HashMap;
-use std::sync::{Mutex, LazyLock};
-use std::time::{Duration, Instant};
+use axum::{extract::Request, http::StatusCode, middleware::Next, response::Response};
 use rand::Rng;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 /// CSRF token store with expiration
 struct CsrfStore {
@@ -66,22 +61,17 @@ static CSRF_STORE: LazyLock<Mutex<CsrfStore>> = LazyLock::new(|| {
 
 /// Generate a CSRF token for a session
 pub fn generate_token(session_id: &str) -> String {
-    CSRF_STORE
-        .lock()
-        .unwrap()
-        .generate_token(session_id)
+    CSRF_STORE.lock().unwrap().generate_token(session_id)
 }
 
 /// Validate a CSRF token
 pub fn validate_token(session_id: &str, token: &str) -> bool {
-    CSRF_STORE
-        .lock()
-        .unwrap()
-        .validate_token(session_id, token)
+    CSRF_STORE.lock().unwrap().validate_token(session_id, token)
 }
 
 /// Get or create a session ID from request
 /// Uses a simple hash of the Authorization header as session identifier
+#[allow(dead_code)] // Used by csrf_middleware, which is not yet mounted.
 fn get_session_id(request: &Request) -> String {
     // Use Authorization header as session identifier
     // In a real implementation, you'd use a proper session cookie
@@ -98,6 +88,7 @@ fn get_session_id(request: &Request) -> String {
 }
 
 /// CSRF middleware for POST requests
+#[allow(dead_code)] // Retained for future mounting on the web UI router.
 pub async fn csrf_middleware(request: Request, next: Next) -> Response {
     // Only check CSRF on POST requests
     if request.method() == axum::http::Method::POST {
@@ -111,15 +102,14 @@ pub async fn csrf_middleware(request: Request, next: Next) -> Response {
             .or_else(|| {
                 // Try to get from query string as fallback
                 request.uri().query().and_then(|q| {
-                    q.split('&')
-                        .find_map(|pair| {
-                            let mut parts = pair.split('=');
-                            if parts.next() == Some("csrf_token") {
-                                parts.next()
-                            } else {
-                                None
-                            }
-                        })
+                    q.split('&').find_map(|pair| {
+                        let mut parts = pair.split('=');
+                        if parts.next() == Some("csrf_token") {
+                            parts.next()
+                        } else {
+                            None
+                        }
+                    })
                 })
             });
 

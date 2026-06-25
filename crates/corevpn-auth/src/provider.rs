@@ -1,9 +1,9 @@
 //! OAuth2/OIDC Provider Configuration
 
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr};
-use secrecy::{ExposeSecret, Secret, SecretString};
+use std::net::IpAddr;
 use tracing::{debug, warn};
 use url::Url;
 
@@ -79,10 +79,14 @@ impl ProviderConfig {
             client_id: client_id.to_string(),
             client_secret: SecretString::new(client_secret.to_string()),
             issuer_url: "https://accounts.google.com".to_string(),
-            authorization_endpoint: Some("https://accounts.google.com/o/oauth2/v2/auth".to_string()),
+            authorization_endpoint: Some(
+                "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
+            ),
             token_endpoint: Some("https://oauth2.googleapis.com/token".to_string()),
             userinfo_endpoint: Some("https://openidconnect.googleapis.com/v1/userinfo".to_string()),
-            device_authorization_endpoint: Some("https://oauth2.googleapis.com/device/code".to_string()),
+            device_authorization_endpoint: Some(
+                "https://oauth2.googleapis.com/device/code".to_string(),
+            ),
             jwks_uri: Some("https://www.googleapis.com/oauth2/v3/certs".to_string()),
             scopes: vec![
                 "openid".to_string(),
@@ -100,7 +104,9 @@ impl ProviderConfig {
         if let Some(domain) = allowed_domain {
             config.allowed_domains.push(domain.to_string());
             // Add hd parameter to restrict to domain
-            config.additional_params.insert("hd".to_string(), domain.to_string());
+            config
+                .additional_params
+                .insert("hd".to_string(), domain.to_string());
         }
 
         config
@@ -136,7 +142,12 @@ impl ProviderConfig {
     }
 
     /// Create an Okta provider configuration
-    pub fn okta(client_id: &str, client_secret: &str, domain: &str, auth_server_id: Option<&str>) -> Self {
+    pub fn okta(
+        client_id: &str,
+        client_secret: &str,
+        domain: &str,
+        auth_server_id: Option<&str>,
+    ) -> Self {
         let auth_server = auth_server_id.unwrap_or("default");
         let base_url = format!("https://{}/oauth2/{}", domain, auth_server);
 
@@ -220,18 +231,27 @@ pub struct OAuthProvider {
 /// OIDC Discovery metadata
 #[derive(Debug, Clone, Deserialize)]
 pub struct OidcMetadata {
+    /// OIDC issuer identifier
     pub issuer: String,
+    /// Authorization endpoint URL
     pub authorization_endpoint: String,
+    /// Token endpoint URL
     pub token_endpoint: String,
+    /// UserInfo endpoint URL, if advertised
     #[serde(default)]
     pub userinfo_endpoint: Option<String>,
+    /// Device authorization endpoint URL, if advertised
     #[serde(default)]
     pub device_authorization_endpoint: Option<String>,
+    /// JWKS URI for signature verification keys
     pub jwks_uri: String,
+    /// Scopes supported by the provider
     #[serde(default)]
     pub scopes_supported: Vec<String>,
+    /// Response types supported by the provider
     #[serde(default)]
     pub response_types_supported: Vec<String>,
+    /// Grant types supported by the provider
     #[serde(default)]
     pub grant_types_supported: Vec<String>,
 }
@@ -267,13 +287,13 @@ fn is_private_ip(ip: IpAddr) -> bool {
 
 /// Validate URL for SSRF protection
 fn validate_url_for_ssrf(url_str: &str) -> Result<()> {
-    let url = Url::parse(url_str)
-        .map_err(|e| AuthError::ConfigError(format!("Invalid URL: {}", e)))?;
+    let url =
+        Url::parse(url_str).map_err(|e| AuthError::ConfigError(format!("Invalid URL: {}", e)))?;
 
     // Only allow HTTPS
     if url.scheme() != "https" {
         return Err(AuthError::ConfigError(
-            "Only HTTPS URLs are allowed for security".into()
+            "Only HTTPS URLs are allowed for security".into(),
         ));
     }
 
@@ -284,27 +304,27 @@ fn validate_url_for_ssrf(url_str: &str) -> Result<()> {
                 // Block localhost variants
                 if domain == "localhost" || domain.ends_with(".localhost") {
                     return Err(AuthError::ConfigError(
-                        "localhost URLs are not allowed".into()
+                        "localhost URLs are not allowed".into(),
                     ));
                 }
                 // Block .local domains (mDNS)
                 if domain.ends_with(".local") {
                     return Err(AuthError::ConfigError(
-                        ".local domains are not allowed".into()
+                        ".local domains are not allowed".into(),
                     ));
                 }
             }
             url::Host::Ipv4(ip) => {
                 if is_private_ip(IpAddr::V4(ip)) {
                     return Err(AuthError::ConfigError(
-                        "Private IP addresses are not allowed".into()
+                        "Private IP addresses are not allowed".into(),
                     ));
                 }
             }
             url::Host::Ipv6(ip) => {
                 if is_private_ip(IpAddr::V6(ip)) {
                     return Err(AuthError::ConfigError(
-                        "Private IP addresses are not allowed".into()
+                        "Private IP addresses are not allowed".into(),
                     ));
                 }
             }
@@ -331,14 +351,18 @@ impl OAuthProvider {
 
     /// Perform OIDC discovery
     pub async fn discover(&mut self) -> Result<()> {
-        let discovery_url = format!("{}/.well-known/openid-configuration", self.config.issuer_url);
+        let discovery_url = format!(
+            "{}/.well-known/openid-configuration",
+            self.config.issuer_url
+        );
 
         // Validate URL for SSRF protection
         validate_url_for_ssrf(&discovery_url)?;
 
         debug!("Performing OIDC discovery for {}", self.config.issuer_url);
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .get(&discovery_url)
             .send()
             .await
@@ -351,15 +375,14 @@ impl OAuthProvider {
             let status = response.status();
             warn!("OIDC discovery returned status {}", status);
             return Err(AuthError::DiscoveryFailed(
-                "Provider discovery failed".into()
+                "Provider discovery failed".into(),
             ));
         }
 
-        let metadata: OidcMetadata = response.json().await
-            .map_err(|e| {
-                warn!("Failed to parse OIDC metadata: {}", e);
-                AuthError::DiscoveryFailed("Invalid provider response".into())
-            })?;
+        let metadata: OidcMetadata = response.json().await.map_err(|e| {
+            warn!("Failed to parse OIDC metadata: {}", e);
+            AuthError::DiscoveryFailed("Invalid provider response".into())
+        })?;
 
         // Validate discovered endpoints for SSRF
         validate_url_for_ssrf(&metadata.authorization_endpoint)?;
@@ -383,23 +406,28 @@ impl OAuthProvider {
 
     /// Get authorization endpoint
     pub fn authorization_endpoint(&self) -> Result<&str> {
-        self.config.authorization_endpoint
+        self.config
+            .authorization_endpoint
             .as_deref()
             .ok_or_else(|| AuthError::ConfigError("authorization_endpoint not configured".into()))
     }
 
     /// Get token endpoint
     pub fn token_endpoint(&self) -> Result<&str> {
-        self.config.token_endpoint
+        self.config
+            .token_endpoint
             .as_deref()
             .ok_or_else(|| AuthError::ConfigError("token_endpoint not configured".into()))
     }
 
     /// Get device authorization endpoint
     pub fn device_authorization_endpoint(&self) -> Result<&str> {
-        self.config.device_authorization_endpoint
+        self.config
+            .device_authorization_endpoint
             .as_deref()
-            .ok_or_else(|| AuthError::ConfigError("device_authorization_endpoint not configured".into()))
+            .ok_or_else(|| {
+                AuthError::ConfigError("device_authorization_endpoint not configured".into())
+            })
     }
 
     /// Check if email domain is allowed
@@ -420,9 +448,10 @@ impl OAuthProvider {
             None => return false,
         };
 
-        self.config.allowed_domains.iter().any(|d| {
-            d.to_lowercase() == email_domain
-        })
+        self.config
+            .allowed_domains
+            .iter()
+            .any(|d| d.to_lowercase() == email_domain)
     }
 
     /// Check if user is in required groups
@@ -431,7 +460,10 @@ impl OAuthProvider {
             return true;
         }
 
-        self.config.required_groups.iter().any(|g| groups.contains(g))
+        self.config
+            .required_groups
+            .iter()
+            .any(|g| groups.contains(g))
     }
 }
 

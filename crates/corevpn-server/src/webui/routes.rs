@@ -5,11 +5,11 @@
 
 use axum::{
     Router,
-    middleware,
-    routing::{get, post},
-    response::{Html, IntoResponse, Redirect, Response},
-    extract::{State, Path, Form},
+    extract::{Form, Path, State},
     http::StatusCode,
+    middleware,
+    response::{Html, IntoResponse, Redirect, Response},
+    routing::{get, post},
 };
 use serde::Deserialize;
 
@@ -29,28 +29,33 @@ pub fn create_router(state: WebUiState) -> Router {
         .route("/", get(dashboard))
         .route("/admin", get(dashboard))
         .route("/admin/", get(dashboard))
-
         // Clients
         .route("/admin/clients", get(clients_list))
         .route("/admin/clients/", get(clients_list))
         .route("/admin/clients/new", get(new_client_form))
         .route("/admin/clients", post(create_client))
         .route("/admin/clients/:id/download", get(download_client_config))
-        .route("/admin/clients/:id/download/mobile", get(download_client_config_mobile))
+        .route(
+            "/admin/clients/:id/download/mobile",
+            get(download_client_config_mobile),
+        )
         .route("/admin/clients/:id/revoke", post(revoke_client))
         .route("/admin/clients/quick-generate", get(quick_generate_form))
-        .route("/admin/clients/quick-generate", post(quick_generate_download))
-
+        .route(
+            "/admin/clients/quick-generate",
+            post(quick_generate_download),
+        )
         // Sessions
         .route("/admin/sessions", get(sessions_list))
         .route("/admin/sessions/", get(sessions_list))
         .route("/admin/sessions/:id/disconnect", post(disconnect_session))
-        .route("/admin/sessions/disconnect-all", post(disconnect_all_sessions))
-
+        .route(
+            "/admin/sessions/disconnect-all",
+            post(disconnect_all_sessions),
+        )
         // Settings
         .route("/admin/settings", get(settings_page))
         .route("/admin/settings/", get(settings_page))
-
         // Apply authentication middleware to all admin routes
         .layer(middleware::from_fn(auth::require_auth))
         .layer(middleware::from_fn(csrf_middleware))
@@ -72,7 +77,10 @@ async fn dashboard(State(state): State<WebUiState>) -> Html<String> {
     // Get stats from session manager
     let (active_clients, total_sessions) = {
         let sessions = state.session_manager.read();
-        (sessions.active_sessions().len() as u32, sessions.session_count() as u64)
+        (
+            sessions.active_sessions().len() as u32,
+            sessions.session_count() as u64,
+        )
     };
 
     let html = templates::dashboard(
@@ -94,7 +102,7 @@ async fn clients_list(State(state): State<WebUiState>) -> Html<String> {
     // In a real implementation, this would fetch from the database
     // For now, show empty list
     let clients: Vec<templates::ClientInfo> = vec![];
-    
+
     // Generate CSRF token for forms
     let session_id = get_session_id_from_state(&state);
     let csrf_token = csrf::generate_token(&session_id);
@@ -113,6 +121,8 @@ async fn new_client_form(State(state): State<WebUiState>) -> Html<String> {
 struct CreateClientForm {
     name: String,
     email: String,
+    // Deserialized from the form but not yet applied to cert generation.
+    #[allow(dead_code)]
     #[serde(default = "default_expires")]
     expires: u32,
     csrf_token: String,
@@ -135,7 +145,7 @@ async fn create_client(
     // Validate and sanitize input
     let name = sanitize_filename(&form.name);
     let email = sanitize_email(&form.email);
-    
+
     if name.is_empty() || name.len() > 64 {
         return error_response(400, "Invalid client name");
     }
@@ -200,9 +210,9 @@ async fn download_client_config(
         return error_response(400, "Invalid client ID");
     }
 
+    use axum::http::header;
     use corevpn_config::generator::ConfigGenerator;
     use corevpn_crypto::CertificateAuthority;
-    use axum::http::header;
 
     // Load CA
     let ca_cert = match std::fs::read_to_string(state.config.ca_cert_path()) {
@@ -247,7 +257,10 @@ async fn download_client_config(
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/x-openvpn-profile")
-        .header(header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", filename))
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", filename),
+        )
         .body(content.into())
         .unwrap_or_else(|_| error_response(500, "Failed to build response"))
 }
@@ -290,9 +303,9 @@ async fn download_client_config_mobile(
         return error_response(400, "Invalid client ID");
     }
 
+    use axum::http::header;
     use corevpn_config::generator::ConfigGenerator;
     use corevpn_crypto::CertificateAuthority;
-    use axum::http::header;
 
     // Load CA
     let ca_cert = match std::fs::read_to_string(state.config.ca_cert_path()) {
@@ -339,7 +352,10 @@ async fn download_client_config_mobile(
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/x-openvpn-profile")
-        .header(header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", filename))
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", filename),
+        )
         .body(content.into())
         .unwrap_or_else(|_| error_response(500, "Failed to build response"))
 }
@@ -370,12 +386,12 @@ async fn quick_generate_download(
         return error_response(403, "Invalid CSRF token");
     }
 
+    use axum::http::header;
     use corevpn_config::generator::ConfigGenerator;
     use corevpn_crypto::CertificateAuthority;
-    use axum::http::header;
 
     // Validate and sanitize name
-    let name = sanitize_filename(&form.name.trim().to_string());
+    let name = sanitize_filename(form.name.trim());
     if name.is_empty() || name.len() > 64 {
         return error_response(400, "Invalid client name. Must be 1-64 characters.");
     }
@@ -435,7 +451,10 @@ async fn quick_generate_download(
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/x-openvpn-profile")
-        .header(header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", filename))
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", filename),
+        )
         .body(content.into())
         .unwrap_or_else(|_| error_response(500, "Failed to build response"))
 }
@@ -451,14 +470,22 @@ async fn sessions_list(State(state): State<WebUiState>) -> Html<String> {
         .iter()
         .map(|s| {
             // Format VPN address - prefer IPv4, fall back to IPv6
-            let vpn_ip = s.vpn_address
-                .and_then(|addr| addr.ipv4.map(|ip| ip.to_string())
-                    .or_else(|| addr.ipv6.map(|ip| ip.to_string())))
+            let vpn_ip = s
+                .vpn_address
+                .and_then(|addr| {
+                    addr.ipv4
+                        .map(|ip| ip.to_string())
+                        .or_else(|| addr.ipv6.map(|ip| ip.to_string()))
+                })
                 .unwrap_or_else(|| "-".to_string());
 
             templates::SessionInfo {
                 id: s.id.to_string(),
-                client_name: s.user_id.as_ref().map(|u| u.to_string()).unwrap_or_else(|| "Unknown".to_string()),
+                client_name: s
+                    .user_id
+                    .as_ref()
+                    .map(|u| u.to_string())
+                    .unwrap_or_else(|| "Unknown".to_string()),
                 vpn_ip,
                 real_ip: format!("{}:{}", s.client_ip, s.client_port),
                 connected_at: s.created_at.format("%Y-%m-%d %H:%M").to_string(),
@@ -540,7 +567,9 @@ async fn disconnect_all_sessions(
 async fn settings_page(State(state): State<WebUiState>) -> Html<String> {
     let config = &state.config;
 
-    let (oauth_enabled, oauth_provider) = config.oauth.as_ref()
+    let (oauth_enabled, oauth_provider) = config
+        .oauth
+        .as_ref()
         .map(|o| (o.enabled, Some(o.provider.as_str())))
         .unwrap_or((false, None));
 
@@ -563,7 +592,10 @@ async fn settings_page(State(state): State<WebUiState>) -> Html<String> {
 }
 
 async fn not_found() -> Html<String> {
-    Html(templates::error_page(404, "The page you're looking for doesn't exist."))
+    Html(templates::error_page(
+        404,
+        "The page you're looking for doesn't exist.",
+    ))
 }
 
 // ============================================================================
@@ -576,7 +608,7 @@ fn error_response(status: u16, message: &str) -> Response {
         500 => "An internal error occurred. Please try again later.",
         _ => message,
     };
-    
+
     let html = templates::error_page(status, safe_message);
     let status_code = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
@@ -599,9 +631,7 @@ fn sanitize_filename_for_download(filename: &str) -> String {
     // Remove path separators and control characters
     filename
         .chars()
-        .filter(|c| {
-            !matches!(c, '/' | '\\' | '\0'..='\x1f' | '\x7f'..='\u{9f}')
-        })
+        .filter(|c| !matches!(c, '/' | '\\' | '\0'..='\x1f' | '\x7f'..='\u{9f}'))
         .collect::<String>()
         .trim()
         .to_string()
@@ -614,9 +644,7 @@ fn sanitize_filename_for_download(filename: &str) -> String {
 fn sanitize_filename(input: &str) -> String {
     input
         .chars()
-        .filter(|c| {
-            c.is_alphanumeric() || matches!(c, '-' | '_' | '.')
-        })
+        .filter(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
         .take(64)
         .collect()
 }
@@ -625,9 +653,7 @@ fn sanitize_filename(input: &str) -> String {
 fn sanitize_email(input: &str) -> String {
     input
         .chars()
-        .filter(|c| {
-            c.is_alphanumeric() || matches!(c, '@' | '.' | '-' | '_' | '+')
-        })
+        .filter(|c| c.is_alphanumeric() || matches!(c, '@' | '.' | '-' | '_' | '+'))
         .take(255)
         .collect()
 }
@@ -637,9 +663,7 @@ fn sanitize_path_param(input: &str) -> String {
     // Remove path traversal attempts and control characters
     input
         .chars()
-        .filter(|c| {
-            !matches!(c, '/' | '\\' | '.' | '\0'..='\x1f' | '\x7f'..='\u{9f}')
-        })
+        .filter(|c| !matches!(c, '/' | '\\' | '.' | '\0'..='\x1f' | '\x7f'..='\u{9f}'))
         .take(64)
         .collect()
 }
@@ -661,7 +685,7 @@ async fn csrf_middleware(request: Request, next: Next) -> Response {
 /// CSP middleware - add Content-Security-Policy headers
 async fn csp_middleware(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
-    
+
     // Add strict CSP header
     let csp = "default-src 'self'; \
                script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://fonts.googleapis.com; \
@@ -672,32 +696,34 @@ async fn csp_middleware(request: Request, next: Next) -> Response {
                frame-ancestors 'none'; \
                base-uri 'self'; \
                form-action 'self'";
-    
+
     if let Ok(header_value) = header::HeaderValue::from_str(csp) {
-        response.headers_mut().insert(header::CONTENT_SECURITY_POLICY, header_value);
+        response
+            .headers_mut()
+            .insert(header::CONTENT_SECURITY_POLICY, header_value);
     }
-    
+
     // Add other security headers
     response.headers_mut().insert(
         header::X_CONTENT_TYPE_OPTIONS,
         header::HeaderValue::from_static("nosniff"),
     );
-    
+
     response.headers_mut().insert(
         header::X_FRAME_OPTIONS,
         header::HeaderValue::from_static("DENY"),
     );
-    
+
     response.headers_mut().insert(
         header::X_XSS_PROTECTION,
         header::HeaderValue::from_static("1; mode=block"),
     );
-    
+
     response.headers_mut().insert(
         header::REFERRER_POLICY,
         header::HeaderValue::from_static("strict-origin-when-cross-origin"),
     );
-    
+
     response
 }
 

@@ -203,7 +203,7 @@ pub struct OAuthSettings {
     /// Port for the OAuth HTTP callback server (default: 9000)
     #[serde(default = "default_oauth_port")]
     pub oauth_port: u16,
-    /// External base URL for OAuth callbacks, e.g. "https://vpn.example.com".
+    /// External base URL for OAuth callbacks, e.g. `https://vpn.example.com`.
     /// If set, this is used as-is for constructing redirect_uri and auth URLs.
     /// If not set, the URL is built from public_host and oauth_port with HTTPS.
     #[serde(default)]
@@ -345,7 +345,6 @@ pub struct LoggingSettings {
     pub file: Option<PathBuf>,
 
     // === Connection Logging Settings ===
-
     /// Connection logging mode
     /// Set to "none" for complete ghost mode - no connection logging at all
     #[serde(default)]
@@ -409,7 +408,10 @@ pub struct AdminSettings {
     #[serde(default = "default_admin_addr")]
     pub listen_addr: SocketAddr,
     /// API key (auto-generated if not set)
-    #[serde(skip_serializing, deserialize_with = "deserialize_optional_secret_string")]
+    #[serde(
+        skip_serializing,
+        deserialize_with = "deserialize_optional_secret_string"
+    )]
     pub api_key: Option<SecretString>,
     /// Allowed IP addresses
     #[serde(default)]
@@ -459,7 +461,9 @@ pub struct AuditSettings {
     pub sinks: Vec<AuditSinkConfig>,
 }
 
-fn default_audit_buffer() -> usize { 10000 }
+fn default_audit_buffer() -> usize {
+    10000
+}
 
 impl Default for AuditSettings {
     fn default() -> Self {
@@ -480,170 +484,258 @@ impl Default for AuditSettings {
 pub enum AuditSinkConfig {
     /// AWS CloudWatch Logs
     AwsCloudwatch {
+        /// AWS region (e.g. `us-east-1`)
         region: String,
+        /// CloudWatch log group name
         log_group: String,
+        /// CloudWatch log stream name
         #[serde(default = "default_cloudwatch_stream")]
         log_stream: String,
+        /// Optional named AWS credentials profile
         #[serde(default)]
         profile: Option<String>,
+        /// Optional IAM role ARN to assume
         #[serde(default)]
         role_arn: Option<String>,
     },
 
     /// AWS S3 bucket
     AwsS3 {
+        /// AWS region (e.g. `us-east-1`)
         region: String,
+        /// Target S3 bucket name
         bucket: String,
+        /// Key prefix for stored audit objects
         #[serde(default = "default_s3_prefix")]
         prefix: String,
+        /// Optional named AWS credentials profile
         #[serde(default)]
         profile: Option<String>,
     },
 
     /// AWS Security Hub
     AwsSecurityHub {
+        /// AWS region (e.g. `us-east-1`)
         region: String,
+        /// AWS account ID owning the findings
         account_id: String,
+        /// Optional named AWS credentials profile
         #[serde(default)]
         profile: Option<String>,
     },
 
     /// AWS EventBridge
     AwsEventBridge {
+        /// AWS region (e.g. `us-east-1`)
         region: String,
+        /// Target EventBridge event bus name
         #[serde(default = "default_event_bus")]
         event_bus: String,
+        /// Optional named AWS credentials profile
         #[serde(default)]
         profile: Option<String>,
     },
 
     /// Azure Monitor / Log Analytics
     AzureMonitor {
+        /// Log Analytics workspace ID
         workspace_id: String,
+        /// Workspace shared key used for the signed request
         shared_key: String,
+        /// Custom log type / table name
         #[serde(default = "default_azure_log_type")]
         log_type: String,
     },
 
     /// Azure Event Hub
     AzureEventHub {
+        /// Event Hubs namespace
         namespace: String,
+        /// Target event hub name
         event_hub: String,
+        /// Shared access policy name
         policy_name: String,
+        /// Shared access policy key
         policy_key: String,
     },
 
     /// Azure Sentinel (via Log Analytics)
     AzureSentinel {
+        /// Log Analytics workspace ID
         workspace_id: String,
+        /// Workspace shared key used for the signed request
         shared_key: String,
+        /// Custom log type / table name
         #[serde(default = "default_sentinel_log_type")]
         log_type: String,
     },
 
     /// Oracle Cloud Logging
     OracleLogging {
+        /// OCI region identifier
         region: String,
+        /// Target OCID of the log
         log_id: String,
+        /// Tenancy OCID
         tenancy_id: String,
+        /// User OCID
         user_id: String,
+        /// API signing key fingerprint
         fingerprint: String,
+        /// PEM-encoded API signing private key
         private_key: String,
     },
 
     /// Oracle Cloud Streaming
     OracleStreaming {
+        /// OCI region identifier
         region: String,
+        /// Target stream OCID
         stream_id: String,
+        /// Tenancy OCID
         tenancy_id: String,
+        /// User OCID
         user_id: String,
+        /// API signing key fingerprint
         fingerprint: String,
+        /// PEM-encoded API signing private key
         private_key: String,
     },
 
     /// Elasticsearch
     Elasticsearch {
+        /// One or more Elasticsearch endpoint URLs
         urls: Vec<String>,
+        /// Destination index name
         #[serde(default = "default_es_index")]
         index: String,
+        /// Optional basic-auth username
         #[serde(default)]
         username: Option<String>,
+        /// Optional basic-auth password
         #[serde(default)]
         password: Option<String>,
+        /// Optional API key (alternative to username/password)
         #[serde(default)]
         api_key: Option<String>,
     },
 
     /// Splunk HEC
     Splunk {
+        /// HTTP Event Collector endpoint URL
         url: String,
+        /// HEC authentication token
         token: String,
+        /// Event sourcetype
         #[serde(default = "default_splunk_sourcetype")]
         sourcetype: String,
+        /// Optional target index
         #[serde(default)]
         index: Option<String>,
     },
 
     /// Kafka
     Kafka {
+        /// Bootstrap broker addresses
         brokers: Vec<String>,
+        /// Destination topic
         topic: String,
+        /// Optional SASL username
         #[serde(default)]
         sasl_username: Option<String>,
+        /// Optional SASL password
         #[serde(default)]
         sasl_password: Option<String>,
     },
 
     /// Syslog (TCP/UDP/TLS)
     Syslog {
+        /// Destination host or IP address
         address: String,
+        /// Destination port
         #[serde(default = "default_syslog_port")]
         port: u16,
+        /// Transport protocol (`tcp`, `udp`, or `tls`)
         #[serde(default = "default_syslog_protocol")]
         protocol: String,
+        /// Emit events in ArcSight CEF format
         #[serde(default)]
         use_cef: bool,
+        /// Emit events in IBM LEEF format
         #[serde(default)]
         use_leef: bool,
     },
 
     /// HTTP Webhook
     Webhook {
+        /// Target webhook URL
         url: String,
+        /// Additional HTTP headers to send
         #[serde(default)]
         headers: std::collections::HashMap<String, String>,
+        /// Optional bearer token for `Authorization`
         #[serde(default)]
         bearer_token: Option<String>,
+        /// Optional header name for an API key
         #[serde(default)]
         api_key_header: Option<String>,
+        /// Optional API key value
         #[serde(default)]
         api_key_value: Option<String>,
     },
 
     /// Local file
     File {
+        /// Output file path
         path: String,
+        /// Serialization format (e.g. `json`)
         #[serde(default = "default_audit_format")]
         format: String,
+        /// Maximum file size before rotation, in megabytes
         #[serde(default = "default_max_size")]
         max_size_mb: u64,
+        /// Maximum number of rotated files to retain
         #[serde(default = "default_max_files")]
         max_files: u32,
     },
 }
 
-fn default_cloudwatch_stream() -> String { "corevpn-audit-{date}".to_string() }
-fn default_s3_prefix() -> String { "audit-logs/{date}/{hour}/".to_string() }
-fn default_event_bus() -> String { "default".to_string() }
-fn default_azure_log_type() -> String { "CoreVPNAudit".to_string() }
-fn default_sentinel_log_type() -> String { "CoreVPNSecurity".to_string() }
-fn default_es_index() -> String { "corevpn-audit-{date}".to_string() }
-fn default_splunk_sourcetype() -> String { "corevpn:audit".to_string() }
-fn default_syslog_port() -> u16 { 514 }
-fn default_syslog_protocol() -> String { "udp".to_string() }
-fn default_audit_format() -> String { "json".to_string() }
-fn default_max_size() -> u64 { 100 }
-fn default_max_files() -> u32 { 10 }
+fn default_cloudwatch_stream() -> String {
+    "corevpn-audit-{date}".to_string()
+}
+fn default_s3_prefix() -> String {
+    "audit-logs/{date}/{hour}/".to_string()
+}
+fn default_event_bus() -> String {
+    "default".to_string()
+}
+fn default_azure_log_type() -> String {
+    "CoreVPNAudit".to_string()
+}
+fn default_sentinel_log_type() -> String {
+    "CoreVPNSecurity".to_string()
+}
+fn default_es_index() -> String {
+    "corevpn-audit-{date}".to_string()
+}
+fn default_splunk_sourcetype() -> String {
+    "corevpn:audit".to_string()
+}
+fn default_syslog_port() -> u16 {
+    514
+}
+fn default_syslog_protocol() -> String {
+    "udp".to_string()
+}
+fn default_audit_format() -> String {
+    "json".to_string()
+}
+fn default_max_size() -> u64 {
+    100
+}
+fn default_max_files() -> u32 {
+    10
+}
 
 impl ServerConfig {
     /// Create a default configuration
@@ -709,7 +801,9 @@ impl ServerConfig {
         // Validate as hostname
         // Basic hostname validation: must not be empty, reasonable length, valid characters
         if host.is_empty() {
-            return Err(ConfigError::ValidationError("Hostname cannot be empty".into()));
+            return Err(ConfigError::ValidationError(
+                "Hostname cannot be empty".into(),
+            ));
         }
 
         if host.len() > 253 {
@@ -720,7 +814,10 @@ impl ServerConfig {
 
         // Check for valid hostname characters (letters, digits, hyphens, dots)
         // Must start and end with alphanumeric
-        if !host.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '.') {
+        if !host
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '.')
+        {
             return Err(ConfigError::ValidationError(
                 "Hostname contains invalid characters".into(),
             ));
@@ -773,22 +870,28 @@ impl ServerConfig {
         Self::validate_hostname_or_ip(&self.server.public_host)?;
 
         // Validate subnet
-        self.network.subnet.parse::<Ipv4Net>()
+        self.network
+            .subnet
+            .parse::<Ipv4Net>()
             .map_err(|e| ConfigError::ValidationError(format!("invalid subnet: {}", e)))?;
 
         // Validate IPv6 subnet if provided
         if let Some(ref subnet_v6) = self.network.subnet_v6 {
-            subnet_v6.parse::<ipnet::Ipv6Net>()
+            subnet_v6
+                .parse::<ipnet::Ipv6Net>()
                 .map_err(|e| ConfigError::ValidationError(format!("invalid IPv6 subnet: {}", e)))?;
         }
 
         // Validate DNS servers
         for (idx, dns) in self.network.dns.iter().enumerate() {
-            dns.parse::<IpAddr>()
-                .map_err(|e| ConfigError::ValidationError(format!(
+            dns.parse::<IpAddr>().map_err(|e| {
+                ConfigError::ValidationError(format!(
                     "invalid DNS server #{} '{}': {}",
-                    idx + 1, dns, e
-                )))?;
+                    idx + 1,
+                    dns,
+                    e
+                ))
+            })?;
         }
 
         // Validate DNS search domains
@@ -815,7 +918,8 @@ impl ServerConfig {
             if !is_valid_ipv4 && !is_valid_ipv6 {
                 return Err(ConfigError::ValidationError(format!(
                     "invalid push route #{} '{}': must be valid IPv4 or IPv6 network",
-                    idx + 1, route
+                    idx + 1,
+                    route
                 )));
             }
         }

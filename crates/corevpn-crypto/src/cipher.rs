@@ -11,8 +11,8 @@
 
 use aes_gcm::{Aes256Gcm, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, aead::AeadCore};
+use serde::{Deserialize, Serialize};
 use zeroize::ZeroizeOnDrop;
-use serde::{Serialize, Deserialize};
 
 use crate::{CryptoError, Result};
 
@@ -64,12 +64,20 @@ pub struct DataChannelKey {
 impl DataChannelKey {
     /// Create a new data channel key (with zero implicit IV for non-AEAD or tests)
     pub fn new(key: [u8; 32], cipher_suite: CipherSuite) -> Self {
-        Self { key, implicit_iv: [0u8; 12], cipher_suite }
+        Self {
+            key,
+            implicit_iv: [0u8; 12],
+            cipher_suite,
+        }
     }
 
     /// Create a new data channel key with implicit IV (for OpenVPN AEAD)
     pub fn new_with_iv(key: [u8; 32], implicit_iv: [u8; 12], cipher_suite: CipherSuite) -> Self {
-        Self { key, implicit_iv, cipher_suite }
+        Self {
+            key,
+            implicit_iv,
+            cipher_suite,
+        }
     }
 
     /// Get the cipher suite
@@ -119,12 +127,8 @@ impl Cipher {
     #[inline]
     pub fn new(key: &[u8; 32], suite: CipherSuite) -> Self {
         let inner = match suite {
-            CipherSuite::ChaCha20Poly1305 => {
-                CipherInner::ChaCha(ChaCha20Poly1305::new(key.into()))
-            }
-            CipherSuite::Aes256Gcm => {
-                CipherInner::Aes(Box::new(Aes256Gcm::new(key.into())))
-            }
+            CipherSuite::ChaCha20Poly1305 => CipherInner::ChaCha(ChaCha20Poly1305::new(key.into())),
+            CipherSuite::Aes256Gcm => CipherInner::Aes(Box::new(Aes256Gcm::new(key.into()))),
         };
         Self { inner, suite }
     }
@@ -134,20 +138,21 @@ impl Cipher {
     /// Returns ciphertext with authentication tag appended.
     #[inline]
     pub fn encrypt(&self, nonce: &[u8; 12], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
-        use chacha20poly1305::aead::Aead;
         use aes_gcm::aead::Payload;
+        use chacha20poly1305::aead::Aead;
 
-        let payload = Payload { msg: plaintext, aad };
+        let payload = Payload {
+            msg: plaintext,
+            aad,
+        };
 
         match &self.inner {
-            CipherInner::ChaCha(cipher) => {
-                cipher.encrypt(nonce.into(), payload)
-                    .map_err(|_| CryptoError::EncryptionFailed("ChaCha20-Poly1305 encryption failed"))
-            }
-            CipherInner::Aes(cipher) => {
-                cipher.encrypt(nonce.into(), payload)
-                    .map_err(|_| CryptoError::EncryptionFailed("AES-256-GCM encryption failed"))
-            }
+            CipherInner::ChaCha(cipher) => cipher
+                .encrypt(nonce.into(), payload)
+                .map_err(|_| CryptoError::EncryptionFailed("ChaCha20-Poly1305 encryption failed")),
+            CipherInner::Aes(cipher) => cipher
+                .encrypt(nonce.into(), payload)
+                .map_err(|_| CryptoError::EncryptionFailed("AES-256-GCM encryption failed")),
         }
     }
 
@@ -156,22 +161,29 @@ impl Cipher {
     /// Returns the number of bytes written.
     /// Buffer must have capacity for plaintext + TAG_SIZE bytes.
     #[inline]
-    pub fn encrypt_into(&self, nonce: &[u8; 12], plaintext: &[u8], aad: &[u8], out: &mut Vec<u8>) -> Result<usize> {
-        use chacha20poly1305::aead::Aead;
+    pub fn encrypt_into(
+        &self,
+        nonce: &[u8; 12],
+        plaintext: &[u8],
+        aad: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<usize> {
         use aes_gcm::aead::Payload;
+        use chacha20poly1305::aead::Aead;
 
-        let payload = Payload { msg: plaintext, aad };
+        let payload = Payload {
+            msg: plaintext,
+            aad,
+        };
         let start_len = out.len();
 
         let ciphertext = match &self.inner {
-            CipherInner::ChaCha(cipher) => {
-                cipher.encrypt(nonce.into(), payload)
-                    .map_err(|_| CryptoError::EncryptionFailed("ChaCha20-Poly1305 encryption failed"))?
-            }
-            CipherInner::Aes(cipher) => {
-                cipher.encrypt(nonce.into(), payload)
-                    .map_err(|_| CryptoError::EncryptionFailed("AES-256-GCM encryption failed"))?
-            }
+            CipherInner::ChaCha(cipher) => cipher.encrypt(nonce.into(), payload).map_err(|_| {
+                CryptoError::EncryptionFailed("ChaCha20-Poly1305 encryption failed")
+            })?,
+            CipherInner::Aes(cipher) => cipher
+                .encrypt(nonce.into(), payload)
+                .map_err(|_| CryptoError::EncryptionFailed("AES-256-GCM encryption failed"))?,
         };
 
         out.extend_from_slice(&ciphertext);
@@ -183,20 +195,21 @@ impl Cipher {
     /// Verifies authentication tag and returns plaintext.
     #[inline]
     pub fn decrypt(&self, nonce: &[u8; 12], ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
-        use chacha20poly1305::aead::Aead;
         use aes_gcm::aead::Payload;
+        use chacha20poly1305::aead::Aead;
 
-        let payload = Payload { msg: ciphertext, aad };
+        let payload = Payload {
+            msg: ciphertext,
+            aad,
+        };
 
         match &self.inner {
-            CipherInner::ChaCha(cipher) => {
-                cipher.decrypt(nonce.into(), payload)
-                    .map_err(|_| CryptoError::DecryptionFailed)
-            }
-            CipherInner::Aes(cipher) => {
-                cipher.decrypt(nonce.into(), payload)
-                    .map_err(|_| CryptoError::DecryptionFailed)
-            }
+            CipherInner::ChaCha(cipher) => cipher
+                .decrypt(nonce.into(), payload)
+                .map_err(|_| CryptoError::DecryptionFailed),
+            CipherInner::Aes(cipher) => cipher
+                .decrypt(nonce.into(), payload)
+                .map_err(|_| CryptoError::DecryptionFailed),
         }
     }
 
@@ -210,9 +223,7 @@ impl Cipher {
             CipherInner::ChaCha(_) => {
                 ChaCha20Poly1305::generate_nonce(&mut rand::rngs::OsRng).into()
             }
-            CipherInner::Aes(_) => {
-                Aes256Gcm::generate_nonce(&mut rand::rngs::OsRng).into()
-            }
+            CipherInner::Aes(_) => Aes256Gcm::generate_nonce(&mut rand::rngs::OsRng).into(),
         }
     }
 
@@ -227,8 +238,8 @@ impl Cipher {
 ///
 /// Implements the OpenVPN AEAD data channel format:
 /// - 4-byte packet ID (big-endian counter)
-/// - Nonce = [packet_id_be(4)] || [implicit_iv[4..12]]
-/// - On-wire: [packet_id(4)] [AEAD_tag(16)] [ciphertext]
+/// - Nonce = `[packet_id_be(4)] || [implicit_iv[4..12]]`
+/// - On-wire: `[packet_id(4)] [AEAD_tag(16)] [ciphertext]`
 /// - AAD = packet_id bytes (4 bytes)
 ///
 /// # Performance
@@ -272,7 +283,7 @@ impl PacketCipher {
     ///
     /// 1. Start with iv[0..12] = [packet_id_be(4), 0, 0, 0, 0, 0, 0, 0, 0]
     /// 2. XOR the entire 12-byte iv with implicit_iv[0..12]:
-    ///      for i in 0..12: iv[i] ^= implicit_iv[i]
+    ///    for i in 0..12: iv[i] ^= implicit_iv[i]
     ///
     /// Result: nonce[0..4] = packet_id XOR implicit_iv[0..4]
     ///         nonce[4..12] = implicit_iv[4..12]
@@ -290,16 +301,18 @@ impl PacketCipher {
     ///
     /// `ad_prefix` is the header bytes (opcode + peer_id for V2) that precede
     /// the packet ID in the on-wire format. OpenVPN authenticates these as part
-    /// of the AEAD AAD: AAD = [ad_prefix] [packet_id(4)].
+    /// of the AEAD AAD: `AAD = [ad_prefix] [packet_id(4)]`.
     ///
-    /// Returns: [packet_id(4)] [AEAD_tag(16)] [ciphertext]
+    /// Returns: `[packet_id(4)] [AEAD_tag(16)] [ciphertext]`
     ///
     /// OpenVPN non-epoch AEAD format places the tag before the ciphertext:
-    ///   [packet_id(4)] [tag(16)] [ciphertext]
+    /// `[packet_id(4)] [tag(16)] [ciphertext]`
     /// The AEAD library produces ciphertext||tag, so we reorder to tag||ciphertext.
     #[inline]
     pub fn encrypt(&mut self, plaintext: &[u8], ad_prefix: &[u8]) -> Result<Vec<u8>> {
-        self.tx_counter = self.tx_counter.checked_add(1)
+        self.tx_counter = self
+            .tx_counter
+            .checked_add(1)
             .ok_or(CryptoError::EncryptionFailed("packet counter overflow"))?;
 
         let pid_bytes = self.tx_counter.to_be_bytes();
@@ -333,8 +346,15 @@ impl PacketCipher {
     /// Returns the total bytes written.
     /// Buffer should be cleared before calling.
     #[inline]
-    pub fn encrypt_into(&mut self, plaintext: &[u8], ad_prefix: &[u8], output: &mut Vec<u8>) -> Result<usize> {
-        self.tx_counter = self.tx_counter.checked_add(1)
+    pub fn encrypt_into(
+        &mut self,
+        plaintext: &[u8],
+        ad_prefix: &[u8],
+        output: &mut Vec<u8>,
+    ) -> Result<usize> {
+        self.tx_counter = self
+            .tx_counter
+            .checked_add(1)
             .ok_or(CryptoError::EncryptionFailed("packet counter overflow"))?;
 
         let pid_bytes = self.tx_counter.to_be_bytes();
@@ -364,11 +384,11 @@ impl PacketCipher {
     ///
     /// `ad_prefix` is the header bytes (opcode + peer_id for V2) that precede
     /// the packet ID in the on-wire format. OpenVPN authenticates these as part
-    /// of the AEAD AAD: AAD = [ad_prefix] [packet_id(4)].
+    /// of the AEAD AAD: `AAD = [ad_prefix] [packet_id(4)]`.
     ///
     /// Supports both tag-at-end and tag-before-ciphertext formats:
-    /// - Tag-at-end (OpenVPN 2.6+): [pid(4)] [ciphertext] [tag(16)]
-    /// - Tag-before (legacy):       [pid(4)] [tag(16)] [ciphertext]
+    /// - Tag-at-end (OpenVPN 2.6+): `[pid(4)] [ciphertext] [tag(16)]`
+    /// - Tag-before (legacy):       `[pid(4)] [tag(16)] [ciphertext]`
     ///
     /// Tries tag-at-end first, falls back to tag-before if decryption fails.
     #[inline]
@@ -397,11 +417,16 @@ impl PacketCipher {
 
         // Diagnostic logging for first 3 packets
         if counter <= 3 {
-            eprintln!("[DECRYPT] packet_id={} key_prefix={:02x?} iv={:02x?}",
-                counter, &self.debug_key_prefix, &self.implicit_iv);
+            eprintln!(
+                "[DECRYPT] packet_id={} key_prefix={:02x?} iv={:02x?}",
+                counter, &self.debug_key_prefix, &self.implicit_iv
+            );
             eprintln!("[DECRYPT]   nonce={:02x?} aad={:02x?}", &nonce, &aad);
-            eprintln!("[DECRYPT]   packet[..20]={:02x?} total_len={}",
-                &packet[..std::cmp::min(20, packet.len())], packet.len());
+            eprintln!(
+                "[DECRYPT]   packet[..20]={:02x?} total_len={}",
+                &packet[..std::cmp::min(20, packet.len())],
+                packet.len()
+            );
         }
 
         // For tag-before (OpenVPN non-epoch): [pid(4)] [tag(16)] [ciphertext]
@@ -417,7 +442,10 @@ impl PacketCipher {
         // Try tag-at-end first (OpenVPN 2.6+ default), then tag-before (legacy)
         if let Ok(plaintext) = self.cipher.decrypt(&nonce, ct_tag_end, &aad) {
             if counter <= 3 {
-                eprintln!("[DECRYPT]   SUCCESS (tag-at-end) plaintext_len={}", plaintext.len());
+                eprintln!(
+                    "[DECRYPT]   SUCCESS (tag-at-end) plaintext_len={}",
+                    plaintext.len()
+                );
             }
             return Ok(plaintext);
         }
@@ -425,7 +453,10 @@ impl PacketCipher {
         match self.cipher.decrypt(&nonce, &ct_tag_reordered, &aad) {
             Ok(plaintext) => {
                 if counter <= 3 {
-                    eprintln!("[DECRYPT]   SUCCESS (tag-before) plaintext_len={}", plaintext.len());
+                    eprintln!(
+                        "[DECRYPT]   SUCCESS (tag-before) plaintext_len={}",
+                        plaintext.len()
+                    );
                 }
                 Ok(plaintext)
             }

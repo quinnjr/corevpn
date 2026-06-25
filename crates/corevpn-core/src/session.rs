@@ -204,11 +204,7 @@ impl SessionManager {
     }
 
     /// Create a new session
-    pub fn create_session(
-        &self,
-        client_ip: std::net::IpAddr,
-        client_port: u16,
-    ) -> Result<Session> {
+    pub fn create_session(&self, client_ip: std::net::IpAddr, client_port: u16) -> Result<Session> {
         let mut sessions = self.sessions.write();
 
         // Check capacity
@@ -305,11 +301,7 @@ mod tests {
 
     #[test]
     fn test_session_lifecycle() {
-        let mut session = Session::new(
-            "192.168.1.1".parse().unwrap(),
-            12345,
-            Duration::hours(1),
-        );
+        let mut session = Session::new("192.168.1.1".parse().unwrap(), 12345, Duration::hours(1));
 
         assert_eq!(session.state, SessionState::Connecting);
         assert!(!session.is_expired());

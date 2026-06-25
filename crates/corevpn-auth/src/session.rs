@@ -1,13 +1,13 @@
 //! Authentication Session Management
 
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 use uuid::Uuid;
-use tracing::{debug, warn};
 
 use crate::{AuthError, AuthState, Result, TokenSet, UserInfo};
 
@@ -46,12 +46,12 @@ impl RateLimiter {
         // Clean up expired entries
         entries.retain(|_, entry| entry.reset_at > now);
 
-        let entry = entries.entry(key.to_string()).or_insert_with(|| {
-            RateLimitEntry {
+        let entry = entries
+            .entry(key.to_string())
+            .or_insert_with(|| RateLimitEntry {
                 count: 0,
                 reset_at: now + self.window,
-            }
-        });
+            });
 
         // Check if reset time has passed
         if now >= entry.reset_at {
@@ -121,8 +121,9 @@ impl AuthSession {
             user_info: None,
             provider: provider.to_string(),
             created_at: now,
-            expires_at: now + chrono::Duration::from_std(lifetime)
-                .unwrap_or_else(|_| chrono::Duration::seconds(86400)), // Fallback to 24 hours
+            expires_at: now
+                + chrono::Duration::from_std(lifetime)
+                    .unwrap_or_else(|_| chrono::Duration::seconds(86400)), // Fallback to 24 hours
             last_activity: now,
             vpn_session_id: None,
             client_ip: None,
@@ -220,6 +221,8 @@ pub struct AuthSessionManager {
     /// Default session lifetime
     default_lifetime: Duration,
     /// Maximum sessions per user
+    // Configured limit retained for future enforcement; not yet checked.
+    #[allow(dead_code)]
     max_sessions_per_user: usize,
     /// Rate limiter for session lookups
     lookup_rate_limiter: RateLimiter,
@@ -263,8 +266,10 @@ impl AuthSessionManager {
         }
 
         // Verify session ID is a valid UUID v4
-        if Uuid::parse_str(id).map(|u| u.get_version() != Some(uuid::Version::Random))
-            .unwrap_or(true) {
+        if Uuid::parse_str(id)
+            .map(|u| u.get_version() != Some(uuid::Version::Random))
+            .unwrap_or(true)
+        {
             warn!("Invalid session ID format: {}", id);
             return None;
         }
@@ -273,7 +278,11 @@ impl AuthSessionManager {
     }
 
     /// Get session by OAuth2 state (with rate limiting)
-    pub fn get_session_by_state(&self, state: &str, client_ip: Option<&str>) -> Option<AuthSession> {
+    pub fn get_session_by_state(
+        &self,
+        state: &str,
+        client_ip: Option<&str>,
+    ) -> Option<AuthSession> {
         // Rate limit lookups
         let rate_limit_key = client_ip.unwrap_or(state);
         if !self.lookup_rate_limiter.check(rate_limit_key) {
@@ -316,7 +325,10 @@ impl AuthSessionManager {
         // Rate limit user session lookups
         let rate_limit_key = client_ip.unwrap_or(email);
         if !self.lookup_rate_limiter.check(rate_limit_key) {
-            warn!("Rate limit exceeded for user session lookup: {}", rate_limit_key);
+            warn!(
+                "Rate limit exceeded for user session lookup: {}",
+                rate_limit_key
+            );
             return Vec::new();
         }
 
@@ -400,7 +412,7 @@ mod tests {
 
     #[test]
     fn test_auth_session() {
-        let mut session = AuthSession::new("google", Duration::from_secs(3600));
+        let session = AuthSession::new("google", Duration::from_secs(3600));
 
         assert!(!session.is_expired());
         assert!(!session.is_authenticated());

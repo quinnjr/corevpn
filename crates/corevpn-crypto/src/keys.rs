@@ -4,18 +4,15 @@
 //! securely cleared from memory when dropped.
 
 use ed25519_dalek::{
-    SigningKey as Ed25519SigningKey,
+    Signature as Ed25519Signature, Signer, SigningKey as Ed25519SigningKey, Verifier,
     VerifyingKey as Ed25519VerifyingKey,
-    Signature as Ed25519Signature,
-    Signer, Verifier,
 };
+use serde::{Deserialize, Serialize};
 use x25519_dalek::{
+    PublicKey as X25519PublicKey, SharedSecret as X25519SharedSecret,
     StaticSecret as X25519StaticSecret,
-    PublicKey as X25519PublicKey,
-    SharedSecret as X25519SharedSecret,
 };
 use zeroize::ZeroizeOnDrop;
-use serde::{Serialize, Deserialize};
 
 use crate::{CryptoError, Result};
 
@@ -181,8 +178,11 @@ pub struct VerifyingKey {
 impl VerifyingKey {
     /// Create from raw bytes
     pub fn from_bytes(bytes: &[u8; 32]) -> Result<Self> {
-        let inner = Ed25519VerifyingKey::from_bytes(bytes)
-            .map_err(|_| CryptoError::InvalidKeyLength { expected: 32, got: bytes.len() })?;
+        let inner =
+            Ed25519VerifyingKey::from_bytes(bytes).map_err(|_| CryptoError::InvalidKeyLength {
+                expected: 32,
+                got: bytes.len(),
+            })?;
         Ok(Self { inner })
     }
 

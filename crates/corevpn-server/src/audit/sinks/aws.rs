@@ -6,7 +6,7 @@
 //! - Security Hub
 //! - EventBridge
 
-use super::{AuditSink, AuditError, AuditEvent};
+use super::{AuditError, AuditEvent, AuditSink};
 use crate::audit::formats::{AuditFormat, FormatConfig, FormatEncoder};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -53,10 +53,18 @@ pub struct AwsCloudwatchConfig {
     pub role_arn: Option<String>,
 }
 
-fn default_stream() -> String { "corevpn-audit-{date}".to_string() }
-fn default_true() -> bool { true }
-fn default_batch_size() -> usize { 100 }
-fn default_flush_interval() -> u64 { 5 }
+fn default_stream() -> String {
+    "corevpn-audit-{date}".to_string()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_batch_size() -> usize {
+    100
+}
+fn default_flush_interval() -> u64 {
+    5
+}
 
 /// CloudWatch Logs sink
 pub struct AwsCloudwatchSink {
@@ -164,8 +172,12 @@ pub struct AwsS3Config {
     pub profile: Option<String>,
 }
 
-fn default_s3_prefix() -> String { "audit-logs/{date}/{hour}/".to_string() }
-fn default_max_file_size() -> u64 { 100 * 1024 * 1024 } // 100MB
+fn default_s3_prefix() -> String {
+    "audit-logs/{date}/{hour}/".to_string()
+}
+fn default_max_file_size() -> u64 {
+    100 * 1024 * 1024
+} // 100MB
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -340,9 +352,15 @@ pub struct AwsEventBridgeConfig {
     pub profile: Option<String>,
 }
 
-fn default_event_bus() -> String { "default".to_string() }
-fn default_source() -> String { "corevpn.audit".to_string() }
-fn default_detail_type() -> String { "CoreVPN Audit Event".to_string() }
+fn default_event_bus() -> String {
+    "default".to_string()
+}
+fn default_source() -> String {
+    "corevpn.audit".to_string()
+}
+fn default_detail_type() -> String {
+    "CoreVPN Audit Event".to_string()
+}
 
 /// EventBridge sink
 pub struct AwsEventBridgeSink {

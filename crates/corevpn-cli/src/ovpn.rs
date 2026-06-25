@@ -61,12 +61,12 @@ impl OvpnConfig {
         let mut dev = "tun".to_string();
 
         // Extract inline blocks
-        let ca_pem = extract_inline_block(content, "ca")
-            .context("Missing <ca> block in .ovpn file")?;
-        let cert_pem = extract_inline_block(content, "cert")
-            .context("Missing <cert> block in .ovpn file")?;
-        let key_pem = extract_inline_block(content, "key")
-            .context("Missing <key> block in .ovpn file")?;
+        let ca_pem =
+            extract_inline_block(content, "ca").context("Missing <ca> block in .ovpn file")?;
+        let cert_pem =
+            extract_inline_block(content, "cert").context("Missing <cert> block in .ovpn file")?;
+        let key_pem =
+            extract_inline_block(content, "key").context("Missing <key> block in .ovpn file")?;
         let tls_auth_raw = extract_inline_block(content, "tls-auth");
 
         // Parse tls-auth key from hex
@@ -199,8 +199,7 @@ fn parse_static_key(pem_block: &str) -> Result<Vec<u8>> {
     }
 
     // Decode hex to bytes
-    let bytes = hex_decode(&hex_data)
-        .context("Failed to decode tls-auth key hex data")?;
+    let bytes = hex_decode(&hex_data).context("Failed to decode tls-auth key hex data")?;
 
     if bytes.len() != 256 {
         bail!(

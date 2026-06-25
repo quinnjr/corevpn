@@ -38,11 +38,11 @@ impl Anonymizer {
     }
 
     fn generate_salt(day: u32, instance_secret: &[u8; 32]) -> [u8; 32] {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
         hasher.update(instance_secret);
-        hasher.update(&day.to_le_bytes());
+        hasher.update(day.to_le_bytes());
         hasher.update(b"corevpn-anonymizer-salt");
 
         let hash = hasher.finalize();
@@ -187,33 +187,41 @@ impl Anonymizer {
     }
 
     fn hash_ip(&self, ip: IpAddr) -> IpAddr {
-        use sha2::{Sha256, Digest};
         use hmac::{Hmac, Mac};
-        
+        use sha2::Sha256;
+
         type HmacSha256 = Hmac<Sha256>;
-        
+
         // Create HMAC with daily salt as key
-        let mut mac = HmacSha256::new_from_slice(&self.daily_salt)
-            .expect("HMAC can take key of any size");
-        
+        let mut mac =
+            HmacSha256::new_from_slice(&self.daily_salt).expect("HMAC can take key of any size");
+
         // Hash the IP address
         let ip_bytes = match ip {
             IpAddr::V4(v4) => {
-                let mut bytes = vec![0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+                let mut bytes = vec![
+                    0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+                ];
                 bytes[0..4].copy_from_slice(&v4.octets());
                 bytes
             }
             IpAddr::V6(v6) => v6.octets().to_vec(),
         };
-        
+
         mac.update(&ip_bytes);
         let result = mac.finalize();
         let hash_bytes = result.into_bytes();
-        
+
         // Use first 8 bytes for hash value
         let hash = u64::from_le_bytes([
-            hash_bytes[0], hash_bytes[1], hash_bytes[2], hash_bytes[3],
-            hash_bytes[4], hash_bytes[5], hash_bytes[6], hash_bytes[7],
+            hash_bytes[0],
+            hash_bytes[1],
+            hash_bytes[2],
+            hash_bytes[3],
+            hash_bytes[4],
+            hash_bytes[5],
+            hash_bytes[6],
+            hash_bytes[7],
         ]);
 
         match ip {
@@ -231,7 +239,10 @@ impl Anonymizer {
             IpAddr::V6(_) => {
                 // Use hash for IPv6 as well, using documentation prefix
                 let bytes: [u8; 16] = [
-                    0x20, 0x01, 0x0d, 0xb8, // 2001:db8::/32 documentation prefix
+                    0x20,
+                    0x01,
+                    0x0d,
+                    0xb8, // 2001:db8::/32 documentation prefix
                     ((hash >> 32) & 0xFF) as u8,
                     ((hash >> 40) & 0xFF) as u8,
                     ((hash >> 48) & 0xFF) as u8,
@@ -240,7 +251,10 @@ impl Anonymizer {
                     ((hash >> 8) & 0xFF) as u8,
                     ((hash >> 16) & 0xFF) as u8,
                     ((hash >> 24) & 0xFF) as u8,
-                    0, 0, 0, 0,
+                    0,
+                    0,
+                    0,
+                    0,
                 ];
                 IpAddr::V6(Ipv6Addr::from(bytes))
             }
@@ -277,24 +291,33 @@ impl Anonymizer {
         }
 
         username.map(|u| {
-            use sha2::{Sha256, Digest};
             use hmac::{Hmac, Mac};
-            
+            use sha2::Sha256;
+
             type HmacSha256 = Hmac<Sha256>;
-            
+
             // Create HMAC with daily salt as key
             let mut mac = HmacSha256::new_from_slice(&self.daily_salt)
                 .expect("HMAC can take key of any size");
-            
+
             mac.update(u.as_bytes());
             let result = mac.finalize();
             let hash_bytes = result.into_bytes();
-            
+
             // Use first 8 bytes for hash value
-            format!("user_{:016x}", u64::from_le_bytes([
-                hash_bytes[0], hash_bytes[1], hash_bytes[2], hash_bytes[3],
-                hash_bytes[4], hash_bytes[5], hash_bytes[6], hash_bytes[7],
-            ]))
+            format!(
+                "user_{:016x}",
+                u64::from_le_bytes([
+                    hash_bytes[0],
+                    hash_bytes[1],
+                    hash_bytes[2],
+                    hash_bytes[3],
+                    hash_bytes[4],
+                    hash_bytes[5],
+                    hash_bytes[6],
+                    hash_bytes[7],
+                ])
+            )
         })
     }
 
@@ -307,14 +330,14 @@ impl Anonymizer {
             // Aggregate into buckets: <1KB, <10KB, <100KB, <1MB, <10MB, <100MB, <1GB, >1GB
             fn bucket(bytes: u64) -> u64 {
                 match bytes {
-                    0..=1023 => 512,                    // ~1KB bucket
-                    1024..=10239 => 5 * 1024,           // ~10KB bucket
-                    10240..=102399 => 50 * 1024,        // ~100KB bucket
-                    102400..=1048575 => 500 * 1024,     // ~1MB bucket
-                    1048576..=10485759 => 5 * 1024 * 1024, // ~10MB bucket
-                    10485760..=104857599 => 50 * 1024 * 1024, // ~100MB bucket
+                    0..=1023 => 512,                             // ~1KB bucket
+                    1024..=10239 => 5 * 1024,                    // ~10KB bucket
+                    10240..=102399 => 50 * 1024,                 // ~100KB bucket
+                    102400..=1048575 => 500 * 1024,              // ~1MB bucket
+                    1048576..=10485759 => 5 * 1024 * 1024,       // ~10MB bucket
+                    10485760..=104857599 => 50 * 1024 * 1024,    // ~100MB bucket
                     104857600..=1073741823 => 500 * 1024 * 1024, // ~1GB bucket
-                    _ => 1024 * 1024 * 1024,            // >1GB bucket
+                    _ => 1024 * 1024 * 1024,                     // >1GB bucket
                 }
             }
 
@@ -331,7 +354,6 @@ impl Anonymizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::connection_log::events::ConnectionEventBuilder;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     #[test]
@@ -341,7 +363,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut anonymizer = Anonymizer::new(config);
+        let anonymizer = Anonymizer::new(config);
 
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 12345);
         let result = anonymizer.anonymize_socket_addr(addr);
@@ -357,7 +379,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut anonymizer = Anonymizer::new(config);
+        let anonymizer = Anonymizer::new(config);
 
         let addr1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 12345);
         let addr2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 101)), 12345);
@@ -380,7 +402,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut anonymizer = Anonymizer::new(config);
+        let anonymizer = Anonymizer::new(config);
 
         let username = Some("john.doe@example.com".to_string());
         let result = anonymizer.anonymize_username(username);
@@ -409,8 +431,8 @@ mod tests {
 
         // Should be bucketed, not exact
         assert_eq!(result.bytes_rx, 5 * 1024 * 1024); // 5MB bucket
-        assert_eq!(result.bytes_tx, 512);              // 1KB bucket
-        assert_eq!(result.packets_rx, 0);              // Packets not logged
+        assert_eq!(result.bytes_tx, 512); // 1KB bucket
+        assert_eq!(result.packets_rx, 0); // Packets not logged
         assert_eq!(result.packets_tx, 0);
     }
 }

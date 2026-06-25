@@ -5,8 +5,8 @@
 
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -49,7 +49,9 @@ impl FileConnectionLogger {
     ) -> Result<Self> {
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await.context("Failed to create log directory")?;
+            fs::create_dir_all(parent)
+                .await
+                .context("Failed to create log directory")?;
         }
 
         let logger = Self {
@@ -173,7 +175,9 @@ impl FileConnectionLogger {
             if pass < 2 {
                 // On passes 0 and 1, also write random-ish data (XOR pattern)
                 file.seek(SeekFrom::Start(0))?;
-                let pattern: Vec<u8> = (0..4096).map(|i| ((i * 0x5A + pass) & 0xFF) as u8).collect();
+                let pattern: Vec<u8> = (0..4096)
+                    .map(|i| ((i * 0x5A + pass) & 0xFF) as u8)
+                    .collect();
                 let mut remaining = file_size;
 
                 while remaining > 0 {
@@ -290,9 +294,7 @@ impl ConnectionLogger for FileConnectionLogger {
     }
 
     fn stats(&self) -> LoggerStats {
-        let storage = std::fs::metadata(&self.path)
-            .map(|m| m.len())
-            .ok();
+        let storage = std::fs::metadata(&self.path).map(|m| m.len()).ok();
 
         LoggerStats {
             events_logged: self.total_logged.load(Ordering::Relaxed),

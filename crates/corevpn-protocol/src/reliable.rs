@@ -242,8 +242,7 @@ impl ReliableTransport {
             Some(srtt) => {
                 // RTO = SRTT + 4 * RTTVAR (RFC 6298)
                 let rto = srtt + self.rttvar * 4;
-                rto.max(self.config.initial_rto)
-                    .min(self.config.max_rto)
+                rto.max(self.config.initial_rto).min(self.config.max_rto)
             }
             None => self.config.initial_rto,
         }

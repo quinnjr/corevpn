@@ -7,7 +7,7 @@
 
 use bytes::{BufMut, Bytes, BytesMut};
 
-use crate::{OpCode, KeyId, ProtocolError, Result};
+use crate::{KeyId, OpCode, ProtocolError, Result};
 
 /// Session ID (8 bytes)
 pub type SessionId = [u8; 8];
@@ -107,7 +107,9 @@ impl PacketHeader {
                     got: data.len(),
                 });
             }
-            packet_id = Some(u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()));
+            packet_id = Some(u32::from_be_bytes(
+                data[offset..offset + 4].try_into().unwrap(),
+            ));
             offset += 4;
 
             // Timestamp (4 bytes)
@@ -117,7 +119,9 @@ impl PacketHeader {
                     got: data.len(),
                 });
             }
-            timestamp = Some(u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()));
+            timestamp = Some(u32::from_be_bytes(
+                data[offset..offset + 4].try_into().unwrap(),
+            ));
             offset += 4;
         }
 
@@ -247,9 +251,10 @@ impl Packet {
         const MAX_ACK_COUNT: usize = 16; // Reasonable limit to prevent DoS
         let ack_count = data[offset] as usize;
         if ack_count > MAX_ACK_COUNT {
-            return Err(ProtocolError::InvalidPacket(
-                format!("ACK count {} exceeds maximum {}", ack_count, MAX_ACK_COUNT).into(),
-            ));
+            return Err(ProtocolError::InvalidPacket(format!(
+                "ACK count {} exceeds maximum {}",
+                ack_count, MAX_ACK_COUNT
+            )));
         }
         offset += 1;
 
@@ -263,7 +268,9 @@ impl Packet {
                         got: data.len(),
                     });
                 }
-                acks.push(u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()));
+                acks.push(u32::from_be_bytes(
+                    data[offset..offset + 4].try_into().unwrap(),
+                ));
                 offset += 4;
             }
 

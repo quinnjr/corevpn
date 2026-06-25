@@ -4,7 +4,8 @@
 
 /// Base HTML template with Tailwind CSS CDN and shared styles
 pub fn base(title: &str, content: &str) -> String {
-    format!(r##"<!DOCTYPE html>
+    format!(
+        r##"<!DOCTYPE html>
 <html lang="en" class="h-full">
 <head>
     <meta charset="UTF-8">
@@ -122,16 +123,39 @@ pub fn base(title: &str, content: &str) -> String {
         {content}
     </div>
 </body>
-</html>"##, title=title, content=content)
+</html>"##,
+        title = title,
+        content = content
+    )
 }
 
 /// Navigation component
 pub fn nav(active: &str) -> String {
     let nav_items = [
-        ("dashboard", "Dashboard", "/admin", r#"<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z"/>"#),
-        ("clients", "Clients", "/admin/clients", r#"<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/>"#),
-        ("sessions", "Sessions", "/admin/sessions", r#"<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/>"#),
-        ("settings", "Settings", "/admin/settings", r#"<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>"#),
+        (
+            "dashboard",
+            "Dashboard",
+            "/admin",
+            r#"<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z"/>"#,
+        ),
+        (
+            "clients",
+            "Clients",
+            "/admin/clients",
+            r#"<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/>"#,
+        ),
+        (
+            "sessions",
+            "Sessions",
+            "/admin/sessions",
+            r#"<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/>"#,
+        ),
+        (
+            "settings",
+            "Settings",
+            "/admin/settings",
+            r#"<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>"#,
+        ),
     ];
 
     let mut items_html = String::new();
@@ -152,7 +176,8 @@ pub fn nav(active: &str) -> String {
         ));
     }
 
-    format!(r#"
+    format!(
+        r#"
         <aside class="fixed left-0 top-0 h-full w-64 glass border-r border-void-700/30 z-40">
             <div class="p-6 border-b border-void-700/30">
                 <div class="flex items-center gap-3">
@@ -177,10 +202,13 @@ pub fn nav(active: &str) -> String {
                 </div>
             </div>
         </aside>
-    "#, items_html=items_html)
+    "#,
+        items_html = items_html
+    )
 }
 
 /// Dashboard page
+#[allow(clippy::too_many_arguments)] // Template render fn; args mirror template fields.
 pub fn dashboard(
     uptime: &str,
     active_clients: u32,
@@ -192,7 +220,8 @@ pub fn dashboard(
     protocol: &str,
     subnet: &str,
 ) -> String {
-    let content = format!(r##"
+    let content = format!(
+        r##"
         {nav}
         <main class="ml-64 p-8">
             <header class="mb-8">
@@ -359,7 +388,11 @@ pub fn clients_list(clients: &[ClientInfo], csrf_token: &str) -> String {
             } else {
                 "bg-void-700/50 text-void-400"
             };
-            let status_text = if client.connected { "Online" } else { "Offline" };
+            let status_text = if client.connected {
+                "Online"
+            } else {
+                "Offline"
+            };
 
             rows.push_str(&format!(r#"
                 <tr class="border-b border-void-800/50 hover:bg-void-800/30 transition-colors">
@@ -415,7 +448,8 @@ pub fn clients_list(clients: &[ClientInfo], csrf_token: &str) -> String {
         }
     }
 
-    let content = format!(r##"
+    let content = format!(
+        r##"
         {nav}
         <main class="ml-64 p-8">
             <header class="mb-8 flex items-center justify-between">
@@ -468,7 +502,8 @@ pub fn clients_list(clients: &[ClientInfo], csrf_token: &str) -> String {
 
 /// New client form
 pub fn new_client(csrf_token: &str) -> String {
-    let content = format!(r##"
+    let content = format!(
+        r##"
         {nav}
         <main class="ml-64 p-8">
             <header class="mb-8">
@@ -580,7 +615,8 @@ pub fn sessions_list(sessions: &[SessionInfo], csrf_token: &str) -> String {
         }
     }
 
-    let content = format!(r##"
+    let content = format!(
+        r##"
         {nav}
         <main class="ml-64 p-8">
             <header class="mb-8">
@@ -617,6 +653,7 @@ pub fn sessions_list(sessions: &[SessionInfo], csrf_token: &str) -> String {
 }
 
 /// Settings page
+#[allow(clippy::too_many_arguments)] // Template render fn; args mirror template fields.
 pub fn settings(
     public_host: &str,
     port: u16,
@@ -628,13 +665,16 @@ pub fn settings(
     csrf_token: &str,
 ) -> String {
     let oauth_status = if oauth_enabled {
-        format!(r#"<span class="text-neon-green">Enabled ({provider})</span>"#,
-            provider = oauth_provider.unwrap_or("unknown"))
+        format!(
+            r#"<span class="text-neon-green">Enabled ({provider})</span>"#,
+            provider = oauth_provider.unwrap_or("unknown")
+        )
     } else {
         r#"<span class="text-void-400">Disabled</span>"#.to_string()
     };
 
-    let content = format!(r##"
+    let content = format!(
+        r##"
         {nav}
         <main class="ml-64 p-8">
             <header class="mb-8">
@@ -757,7 +797,8 @@ pub fn client_download(client_name: &str, filename: &str, ovpn_content: &str) ->
     // Base64 encode the content for data URL download
     let encoded = base64_encode(ovpn_content.as_bytes());
 
-    let content = format!(r##"
+    let content = format!(
+        r##"
         {nav}
         <main class="ml-64 p-8">
             <div class="max-w-xl mx-auto text-center py-12">
@@ -878,7 +919,8 @@ fn html_escape(s: &str) -> String {
 
 /// Quick generate page - simple form for fast config generation
 pub fn quick_generate(csrf_token: &str) -> String {
-    let content = format!(r##"
+    let content = format!(
+        r##"
         {nav}
         <main class="ml-64 p-8">
             <header class="mb-8">
@@ -966,7 +1008,8 @@ pub fn error_page(status: u16, message: &str) -> String {
         _ => ("Error", "⚠️"),
     };
 
-    let content = format!(r##"
+    let content = format!(
+        r##"
         <div class="min-h-screen flex items-center justify-center p-8">
             <div class="text-center">
                 <div class="text-6xl mb-6">{emoji}</div>

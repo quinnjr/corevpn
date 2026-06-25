@@ -30,17 +30,14 @@ pub fn get_admin_password() -> Option<String> {
 ///
 /// Requires the `COREVPN_ADMIN_PASSWORD` environment variable to be set.
 /// Username is always "admin".
-pub async fn require_auth(
-    request: Request<Body>,
-    next: Next,
-) -> Response<Body> {
+pub async fn require_auth(request: Request<Body>, next: Next) -> Response<Body> {
     // Get expected password from environment
     let expected_password = match get_admin_password() {
         Some(p) if !p.is_empty() => p,
         _ => {
             // No password configured - return error
             return unauthorized_response(Some(
-                "Admin password not configured. Set COREVPN_ADMIN_PASSWORD environment variable."
+                "Admin password not configured. Set COREVPN_ADMIN_PASSWORD environment variable.",
             ));
         }
     };
@@ -93,7 +90,7 @@ fn unauthorized_response(message: Option<&str>) -> Response<Body> {
         .status(StatusCode::UNAUTHORIZED)
         .header(
             header::WWW_AUTHENTICATE,
-            format!("Basic realm=\"CoreVPN Admin\", charset=\"UTF-8\"")
+            "Basic realm=\"CoreVPN Admin\", charset=\"UTF-8\"",
         )
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
         .body(Body::from(body.to_string()))

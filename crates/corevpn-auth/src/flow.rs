@@ -3,15 +3,15 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use secrecy::ExposeSecret;
-use tracing::{debug, warn};
+use serde::{Deserialize, Serialize};
+use tracing::warn;
+use uuid::Uuid;
 
-use crate::{AuthError, OAuthProvider, Result, TokenSet};
 use crate::session::RateLimiter;
-use std::sync::Arc;
+use crate::{AuthError, OAuthProvider, Result, TokenSet};
 use parking_lot::RwLock;
+use std::sync::Arc;
 
 /// Authentication state (for CSRF protection)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,8 +39,9 @@ impl AuthState {
             nonce: Uuid::new_v4().to_string(),
             code_verifier: Self::generate_code_verifier(),
             created_at: now,
-            expires_at: now + chrono::Duration::from_std(lifetime)
-                .unwrap_or_else(|_| chrono::Duration::seconds(600)), // Fallback to 10 minutes
+            expires_at: now
+                + chrono::Duration::from_std(lifetime)
+                    .unwrap_or_else(|_| chrono::Duration::seconds(600)), // Fallback to 10 minutes
             metadata: HashMap::new(),
         }
     }
@@ -52,8 +53,8 @@ impl AuthState {
 
     /// Get PKCE code challenge
     pub fn code_challenge(&self) -> String {
-        use sha2::{Sha256, Digest};
         use base64::Engine;
+        use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
         hasher.update(self.code_verifier.as_bytes());
@@ -77,6 +78,8 @@ pub struct AuthFlow {
     /// Redirect URI
     redirect_uri: String,
     /// Rate limiter for authentication attempts
+    // Retained for future per-flow rate limiting; not yet consulted on this struct.
+    #[allow(dead_code)]
     rate_limiter: Arc<RwLock<RateLimiter>>,
 }
 
@@ -87,14 +90,18 @@ impl AuthFlow {
             provider,
             redirect_uri: redirect_uri.to_string(),
             rate_limiter: Arc::new(RwLock::new(RateLimiter::new(
-                5, // 5 attempts
+                5,                                   // 5 attempts
                 std::time::Duration::from_secs(300), // per 5 minutes
             ))),
         }
     }
 
     /// Create a new auth flow with custom rate limiter
-    pub fn with_rate_limiter(provider: OAuthProvider, redirect_uri: &str, rate_limiter: RateLimiter) -> Self {
+    pub fn with_rate_limiter(
+        provider: OAuthProvider,
+        redirect_uri: &str,
+        rate_limiter: RateLimiter,
+    ) -> Self {
         Self {
             provider,
             redirect_uri: redirect_uri.to_string(),
@@ -175,7 +182,10 @@ impl AuthFlow {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            warn!("Token exchange failed with status {}: {}", status, error_text);
+            warn!(
+                "Token exchange failed with status {}: {}",
+                status, error_text
+            );
             return Err(AuthError::OAuth2Error("Authentication failed".into()));
         }
 
@@ -188,7 +198,8 @@ impl AuthFlow {
             expires_at: chrono::Utc::now()
                 + chrono::Duration::seconds(token_response.expires_in.unwrap_or(3600) as i64),
             token_type: token_response.token_type,
-            scopes: token_response.scope
+            scopes: token_response
+                .scope
                 .map(|s| s.split(' ').map(String::from).collect())
                 .unwrap_or_default(),
         })
@@ -221,7 +232,10 @@ impl AuthFlow {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            warn!("Token refresh failed with status {}: {}", status, error_text);
+            warn!(
+                "Token refresh failed with status {}: {}",
+                status, error_text
+            );
             return Err(AuthError::TokenRefreshFailed("Token refresh failed".into()));
         }
 
@@ -234,7 +248,8 @@ impl AuthFlow {
             expires_at: chrono::Utc::now()
                 + chrono::Duration::seconds(token_response.expires_in.unwrap_or(3600) as i64),
             token_type: token_response.token_type,
-            scopes: token_response.scope
+            scopes: token_response
+                .scope
                 .map(|s| s.split(' ').map(String::from).collect())
                 .unwrap_or_default(),
         })
@@ -255,7 +270,7 @@ impl DeviceAuthFlow {
         Self {
             provider,
             rate_limiter: Arc::new(RwLock::new(RateLimiter::new(
-                10, // 10 attempts
+                10,                                  // 10 attempts
                 std::time::Duration::from_secs(600), // per 10 minutes
             ))),
         }
@@ -266,29 +281,27 @@ impl DeviceAuthFlow {
         // Rate limit device auth attempts
         let rate_limit_key = client_ip.unwrap_or("unknown");
         if !self.rate_limiter.read().check(rate_limit_key) {
-            return Err(AuthError::OAuth2Error("Too many device authorization attempts".into()));
+            return Err(AuthError::OAuth2Error(
+                "Too many device authorization attempts".into(),
+            ));
         }
 
         let endpoint = self.provider.device_authorization_endpoint()?;
         let config = self.provider.config();
 
         let scopes = config.scopes.join(" ");
-        let params = [
-            ("client_id", config.client_id.as_str()),
-            ("scope", &scopes),
-        ];
+        let params = [("client_id", config.client_id.as_str()), ("scope", &scopes)];
 
         let client = reqwest::Client::new();
-        let response = client
-            .post(endpoint)
-            .form(&params)
-            .send()
-            .await?;
+        let response = client.post(endpoint).form(&params).send().await?;
 
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            warn!("Device authorization failed with status {}: {}", status, error_text);
+            warn!(
+                "Device authorization failed with status {}: {}",
+                status, error_text
+            );
             return Err(AuthError::OAuth2Error("Device authorization failed".into()));
         }
 
@@ -316,18 +329,13 @@ impl DeviceAuthFlow {
         ];
 
         let client = reqwest::Client::new();
-        let response = client
-            .post(endpoint)
-            .form(&params)
-            .send()
-            .await?;
+        let response = client.post(endpoint).form(&params).send().await?;
 
         if !response.status().is_success() {
-            let error_response: ErrorResponse = response.json().await
-                .map_err(|e| {
-                    warn!("Failed to parse error response: {}", e);
-                    AuthError::OAuth2Error("Device authorization failed".into())
-                })?;
+            let error_response: ErrorResponse = response.json().await.map_err(|e| {
+                warn!("Failed to parse error response: {}", e);
+                AuthError::OAuth2Error("Device authorization failed".into())
+            })?;
 
             return match error_response.error.as_str() {
                 "authorization_pending" => Err(AuthError::AuthorizationPending),
@@ -349,7 +357,8 @@ impl DeviceAuthFlow {
             expires_at: chrono::Utc::now()
                 + chrono::Duration::seconds(token_response.expires_in.unwrap_or(3600) as i64),
             token_type: token_response.token_type,
-            scopes: token_response.scope
+            scopes: token_response
+                .scope
                 .map(|s| s.split(' ').map(String::from).collect())
                 .unwrap_or_default(),
         })
@@ -399,6 +408,8 @@ fn default_interval() -> u64 {
 #[derive(Debug, Deserialize)]
 struct ErrorResponse {
     error: String,
+    // Deserialized from OAuth2 error responses for completeness; not surfaced yet.
+    #[allow(dead_code)]
     #[serde(default)]
     error_description: Option<String>,
 }

@@ -8,18 +8,18 @@
 //!
 //! Supports anonymization options for privacy-conscious deployments.
 
-mod events;
-mod logger;
-mod file_logger;
-mod db_logger;
-mod null_logger;
-mod memory_logger;
 mod anonymizer;
+mod db_logger;
+mod events;
+mod file_logger;
+mod logger;
+mod memory_logger;
+mod null_logger;
 
-pub use events::*;
-pub use logger::{ConnectionLogger, create_logger};
-pub use file_logger::FileConnectionLogger;
-pub use db_logger::DatabaseConnectionLogger;
-pub use null_logger::NullConnectionLogger;
-pub use memory_logger::MemoryConnectionLogger;
 pub use anonymizer::Anonymizer;
+pub use db_logger::DatabaseConnectionLogger;
+pub use events::*;
+pub use file_logger::FileConnectionLogger;
+pub use logger::{ConnectionLogger, create_logger};
+pub use memory_logger::MemoryConnectionLogger;
+pub use null_logger::NullConnectionLogger;

@@ -22,8 +22,7 @@ pub fn profiles_view(ui: &mut egui::Ui, state: &mut AppState, pending_file: &mut
             if ui
                 .add(
                     egui::Button::new(
-                        egui::RichText::new("Import .ovpn")
-                            .color(egui::Color32::WHITE),
+                        egui::RichText::new("Import .ovpn").color(egui::Color32::WHITE),
                     )
                     .fill(egui::Color32::from_rgb(46, 160, 67)),
                 )
@@ -97,39 +96,36 @@ pub fn profiles_view(ui: &mut egui::Ui, state: &mut AppState, pending_file: &mut
                             );
                         });
 
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                // Delete button
-                                if !is_active {
-                                    if ui
-                                        .add(
-                                            egui::Button::new(
-                                                egui::RichText::new("X")
-                                                    .size(12.0)
-                                                    .color(egui::Color32::from_rgb(200, 100, 100)),
-                                            )
-                                            .frame(false),
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // Delete button
+                            if !is_active {
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new("X")
+                                                .size(12.0)
+                                                .color(egui::Color32::from_rgb(200, 100, 100)),
                                         )
-                                        .on_hover_text("Remove profile")
-                                        .clicked()
-                                    {
-                                        to_delete = Some(profile.name.clone());
-                                    }
+                                        .frame(false),
+                                    )
+                                    .on_hover_text("Remove profile")
+                                    .clicked()
+                                {
+                                    to_delete = Some(profile.name.clone());
                                 }
+                            }
 
-                                // Activate/Active button
-                                if is_active {
-                                    ui.label(
-                                        egui::RichText::new("Active")
-                                            .size(12.0)
-                                            .color(egui::Color32::from_rgb(100, 200, 100)),
-                                    );
-                                } else if ui.small_button("Use").clicked() {
-                                    to_activate = Some(profile.name.clone());
-                                }
-                            },
-                        );
+                            // Activate/Active button
+                            if is_active {
+                                ui.label(
+                                    egui::RichText::new("Active")
+                                        .size(12.0)
+                                        .color(egui::Color32::from_rgb(100, 200, 100)),
+                                );
+                            } else if ui.small_button("Use").clicked() {
+                                to_activate = Some(profile.name.clone());
+                            }
+                        });
                     });
                 });
 

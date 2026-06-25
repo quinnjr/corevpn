@@ -38,7 +38,10 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to build D-Bus connection")?;
 
-    info!("Registered on system bus as {} at {}", BUS_NAME, OBJECT_PATH);
+    info!(
+        "Registered on system bus as {} at {}",
+        BUS_NAME, OBJECT_PATH
+    );
 
     // Emit initial StateChanged(INIT) using the generated signal trait
     {

@@ -4,29 +4,29 @@
 
 mod aws;
 mod azure;
-mod oracle;
 mod elasticsearch;
+mod file;
 mod kafka;
+mod oracle;
 mod splunk;
 mod syslog;
 mod webhook;
-mod file;
 
-use std::sync::Arc;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use super::{AuditError, AuditEvent};
 
 pub use aws::*;
 pub use azure::*;
-pub use oracle::*;
 pub use elasticsearch::*;
+pub use file::*;
 pub use kafka::*;
+pub use oracle::*;
 pub use splunk::*;
 pub use syslog::*;
 pub use webhook::*;
-pub use file::*;
 
 /// Trait for audit log destinations
 #[async_trait]

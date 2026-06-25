@@ -22,9 +22,11 @@ pub trait ConnectionLogger: Send + Sync {
 
     /// Query recent events (for monitoring)
     /// Returns None if querying is not supported (null logger)
+    #[allow(dead_code)] // Query API retained for future monitoring endpoints.
     async fn query_recent(&self, limit: usize) -> Result<Option<Vec<ConnectionEvent>>>;
 
     /// Query events for a specific connection
+    #[allow(dead_code)] // Query API retained for future monitoring endpoints.
     async fn query_connection(&self, id: ConnectionId) -> Result<Option<Vec<ConnectionEvent>>>;
 
     /// Flush any buffered events to storage
@@ -34,18 +36,22 @@ pub trait ConnectionLogger: Send + Sync {
     async fn cleanup(&self) -> Result<()>;
 
     /// Get statistics about the logger
+    #[allow(dead_code)] // Stats API retained for future monitoring endpoints.
     fn stats(&self) -> LoggerStats;
 
     /// Check if this logger is a null/ghost logger
+    #[allow(dead_code)] // Retained for future introspection.
     fn is_null(&self) -> bool {
         false
     }
 
     /// Get the logger type name
+    #[allow(dead_code)] // Retained for future introspection.
     fn logger_type(&self) -> &'static str;
 }
 
 /// Statistics about the logger
+#[allow(dead_code)] // Constructed once query/stats endpoints are wired up.
 #[derive(Debug, Clone, Default)]
 pub struct LoggerStats {
     /// Total events logged

@@ -1,6 +1,6 @@
 //! File Audit Sink
 
-use super::{AuditSink, AuditError, AuditEvent};
+use super::{AuditError, AuditEvent, AuditSink};
 use crate::audit::formats::{AuditFormat, FormatConfig, FormatEncoder};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -49,10 +49,18 @@ pub struct FileConfig {
     pub buffer_size: usize,
 }
 
-fn default_max_size() -> u64 { 100 * 1024 * 1024 } // 100MB
-fn default_max_files() -> u32 { 10 }
-fn default_permissions() -> u32 { 0o600 }
-fn default_buffer_size() -> usize { 100 }
+fn default_max_size() -> u64 {
+    100 * 1024 * 1024
+} // 100MB
+fn default_max_files() -> u32 {
+    10
+}
+fn default_permissions() -> u32 {
+    0o600
+}
+fn default_buffer_size() -> usize {
+    100
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

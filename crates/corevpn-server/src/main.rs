@@ -7,13 +7,13 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
-mod setup;
-mod server;
-mod webui;
-mod connection_log;
 pub mod audit;
+mod connection_log;
+mod server;
+mod setup;
+mod webui;
 
 use corevpn_config::ServerConfig;
 
@@ -62,7 +62,7 @@ enum Commands {
         #[arg(short, long)]
         user: String,
 
-        /// Output file (default: <user>.ovpn)
+        /// Output file (default: `<user>.ovpn`)
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
@@ -128,7 +128,11 @@ async fn main() -> Result<()> {
 
             server::run_server(server_config).await?;
         }
-        Commands::Client { config, user, output } => {
+        Commands::Client {
+            config,
+            user,
+            output,
+        } => {
             let server_config = ServerConfig::load(&config)
                 .with_context(|| format!("Failed to load config from {:?}", config))?;
 
@@ -157,10 +161,10 @@ async fn main() -> Result<()> {
 }
 
 fn setup_logging(config: &ServerConfig) {
-    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+    use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
 
     let subscriber = tracing_subscriber::registry().with(filter);
 
@@ -182,20 +186,19 @@ fn generate_client_config(
     println!("Generating client configuration for: {}", username);
 
     // Load CA
-    let ca_cert = std::fs::read_to_string(config.ca_cert_path())
-        .context("Failed to read CA certificate")?;
-    let ca_key = std::fs::read_to_string(config.ca_key_path())
-        .context("Failed to read CA key")?;
+    let ca_cert =
+        std::fs::read_to_string(config.ca_cert_path()).context("Failed to read CA certificate")?;
+    let ca_key = std::fs::read_to_string(config.ca_key_path()).context("Failed to read CA key")?;
 
-    let ca = CertificateAuthority::from_pem(&ca_cert, &ca_key)
-        .context("Failed to load CA")?;
+    let ca = CertificateAuthority::from_pem(&ca_cert, &ca_key).context("Failed to load CA")?;
 
     // Load tls-auth key if exists
     let ta_key = std::fs::read_to_string(config.ta_key_path()).ok();
 
     // Generate config
     let generator = ConfigGenerator::new(config.clone(), ca, ta_key);
-    let generated = generator.generate_client_config(username, Some(username))
+    let generated = generator
+        .generate_client_config(username, Some(username))
         .context("Failed to generate client config")?;
 
     // Write output
@@ -203,8 +206,7 @@ fn generate_client_config(
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(generated.filename()));
 
-    std::fs::write(&output_path, &generated.ovpn_content)
-        .context("Failed to write config file")?;
+    std::fs::write(&output_path, &generated.ovpn_content).context("Failed to write config file")?;
 
     println!("Client configuration saved to: {:?}", output_path);
     println!("\nTo connect:");
@@ -264,7 +266,10 @@ async fn run_web_ui(config: ServerConfig, listen: SocketAddr) -> Result<()> {
             "Admin password not configured! Set {} environment variable.",
             webui::ADMIN_PASSWORD_ENV
         );
-        error!("Example: export {}=\"your-secure-password\"", webui::ADMIN_PASSWORD_ENV);
+        error!(
+            "Example: export {}=\"your-secure-password\"",
+            webui::ADMIN_PASSWORD_ENV
+        );
         anyhow::bail!(
             "Admin password required. Set {} environment variable.",
             webui::ADMIN_PASSWORD_ENV
@@ -296,8 +301,11 @@ async fn run_web_ui(config: ServerConfig, listen: SocketAddr) -> Result<()> {
     Ok(())
 }
 
-async fn run_doctor(_config_path: &std::path::Path, config_result: Result<ServerConfig, corevpn_config::ConfigError>) -> Result<()> {
-    use console::{style, Emoji};
+async fn run_doctor(
+    _config_path: &std::path::Path,
+    config_result: Result<ServerConfig, corevpn_config::ConfigError>,
+) -> Result<()> {
+    use console::{Emoji, style};
 
     static CHECK: Emoji<'_, '_> = Emoji("✅ ", "[OK] ");
     static CROSS: Emoji<'_, '_> = Emoji("❌ ", "[FAIL] ");
@@ -369,11 +377,14 @@ async fn run_doctor(_config_path: &std::path::Path, config_result: Result<Server
 
         // Check port availability
         print!("Checking port {}... ", config.server.listen_addr.port());
-        match std::net::UdpSocket::bind(&config.server.listen_addr) {
+        match std::net::UdpSocket::bind(config.server.listen_addr) {
             Ok(_) => println!("{} Available", CHECK),
             Err(e) => {
                 println!("{} {}", WARN, e);
-                issues.push(format!("Port {} may be in use or require root", config.server.listen_addr.port()));
+                issues.push(format!(
+                    "Port {} may be in use or require root",
+                    config.server.listen_addr.port()
+                ));
             }
         }
     }
@@ -383,7 +394,11 @@ async fn run_doctor(_config_path: &std::path::Path, config_result: Result<Server
     if issues.is_empty() {
         println!("{} All checks passed!", style("SUCCESS").green().bold());
     } else {
-        println!("{} Found {} issue(s):", style("ISSUES").yellow().bold(), issues.len());
+        println!(
+            "{} Found {} issue(s):",
+            style("ISSUES").yellow().bold(),
+            issues.len()
+        );
         for (i, issue) in issues.iter().enumerate() {
             println!("  {}. {}", i + 1, issue);
         }

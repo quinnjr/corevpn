@@ -1,6 +1,6 @@
 //! Elasticsearch Audit Sink
 
-use super::{AuditSink, AuditError, AuditEvent};
+use super::{AuditError, AuditEvent, AuditSink};
 use crate::audit::formats::{FormatConfig, FormatEncoder};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -60,11 +60,21 @@ pub struct ElasticsearchConfig {
     pub pipeline: Option<String>,
 }
 
-fn default_index() -> String { "corevpn-audit-{date}".to_string() }
-fn default_true() -> bool { true }
-fn default_batch_size() -> usize { 100 }
-fn default_flush_interval() -> u64 { 5 }
-fn default_shards() -> u32 { 1 }
+fn default_index() -> String {
+    "corevpn-audit-{date}".to_string()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_batch_size() -> usize {
+    100
+}
+fn default_flush_interval() -> u64 {
+    5
+}
+fn default_shards() -> u32 {
+    1
+}
 
 /// Elasticsearch sink
 pub struct ElasticsearchSink {

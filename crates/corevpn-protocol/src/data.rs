@@ -1,6 +1,6 @@
 //! Data Channel Packet Handling
 
-use bytes::{Bytes, BytesMut, BufMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use corevpn_crypto::{DataChannelKey, PacketCipher};
 
 use crate::{KeyId, OpCode, ProtocolError, Result};
@@ -158,7 +158,9 @@ impl DataChannel {
 
     /// Encrypt an IP packet for transmission
     pub fn encrypt(&mut self, ip_packet: &[u8]) -> Result<DataPacket> {
-        let encrypted = self.encrypt_cipher.encrypt(ip_packet, &self.encrypt_ad_prefix)?;
+        let encrypted = self
+            .encrypt_cipher
+            .encrypt(ip_packet, &self.encrypt_ad_prefix)?;
 
         Ok(DataPacket {
             key_id: self.key_id,
@@ -273,7 +275,7 @@ mod tests {
         let key4 = DataChannelKey::new([0x42u8; 32], CipherSuite::ChaCha20Poly1305);
 
         let mut client = DataChannel::new(KeyId::new(0), key1, key2, false, None);
-        let mut server = DataChannel::new(KeyId::new(0), key3, key4, false, None);
+        let _server = DataChannel::new(KeyId::new(0), key3, key4, false, None);
 
         // Client encrypts
         let ip_packet = b"Hello, VPN!";

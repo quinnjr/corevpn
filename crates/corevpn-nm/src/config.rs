@@ -48,12 +48,10 @@ pub fn parse_nm_settings(
         .context("Connection dict missing 'vpn' group")?;
 
     // Extract the vpn.data dictionary (a{ss} stored as a{sv})
-    let vpn_data = extract_string_dict(vpn_group, "data")
-        .unwrap_or_default();
+    let vpn_data = extract_string_dict(vpn_group, "data").unwrap_or_default();
 
     // Extract the vpn.secrets dictionary
-    let vpn_secrets = extract_string_dict(vpn_group, "secrets")
-        .unwrap_or_default();
+    let vpn_secrets = extract_string_dict(vpn_group, "secrets").unwrap_or_default();
 
     // The config path is required
     let config_path = vpn_data

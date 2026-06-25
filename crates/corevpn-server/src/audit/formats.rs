@@ -72,11 +72,21 @@ pub struct FormatConfig {
     pub syslog_app_name: String,
 }
 
-fn default_vendor() -> String { "PegasusHeavy".to_string() }
-fn default_product() -> String { "CoreVPN".to_string() }
-fn default_version() -> String { "1.0".to_string() }
-fn default_facility() -> u8 { 4 } // security/auth
-fn default_app_name() -> String { "corevpn".to_string() }
+fn default_vendor() -> String {
+    "PegasusHeavy".to_string()
+}
+fn default_product() -> String {
+    "CoreVPN".to_string()
+}
+fn default_version() -> String {
+    "1.0".to_string()
+}
+fn default_facility() -> u8 {
+    4
+} // security/auth
+fn default_app_name() -> String {
+    "corevpn".to_string()
+}
 
 impl Default for FormatConfig {
     fn default() -> Self {
@@ -189,7 +199,10 @@ impl FormatEncoder {
 
         let mut extensions = Vec::new();
 
-        extensions.push(format!("devTime={}", event.timestamp.to_rfc3339_opts(SecondsFormat::Millis, true)));
+        extensions.push(format!(
+            "devTime={}",
+            event.timestamp.to_rfc3339_opts(SecondsFormat::Millis, true)
+        ));
         extensions.push(format!("cat={}", event.category.as_str()));
         extensions.push(format!("sev={}", event.severity.to_cef_severity()));
         extensions.push(format!("msg={}", escape_leef(&event.message)));
@@ -236,10 +249,7 @@ impl FormatEncoder {
         ));
 
         if let Some(ref actor) = event.actor {
-            sd.push_str(&format!(
-                "[actor@32473 type=\"{}\"",
-                actor.actor_type
-            ));
+            sd.push_str(&format!("[actor@32473 type=\"{}\"", actor.actor_type));
             if let Some(ref name) = actor.name {
                 sd.push_str(&format!(" name=\"{}\"", escape_syslog_sd(name)));
             }
@@ -251,13 +261,7 @@ impl FormatEncoder {
 
         Ok(format!(
             "<{}>1 {} {} {} - {} {} {}",
-            priority,
-            timestamp,
-            event.host,
-            self.config.syslog_app_name,
-            msg_id,
-            sd,
-            event.message
+            priority, timestamp, event.host, self.config.syslog_app_name, msg_id, sd, event.message
         ))
     }
 
@@ -371,7 +375,9 @@ impl FormatEncoder {
         let (class_uid, class_name) = match event.category {
             super::events::AuditCategory::Authentication => (3002, "Authentication"),
             super::events::AuditCategory::Authorization => (3003, "Authorization"),
-            super::events::AuditCategory::Network | super::events::AuditCategory::Connection => (4001, "Network Activity"),
+            super::events::AuditCategory::Network | super::events::AuditCategory::Connection => {
+                (4001, "Network Activity")
+            }
             super::events::AuditCategory::Configuration => (5001, "Configuration"),
             _ => (1001, "Security Finding"),
         };
@@ -458,8 +464,9 @@ mod tests {
 
     #[test]
     fn test_json_encoding() {
-        let event = AuditEventBuilder::auth_success("testuser", Some("192.168.1.1".into()), "password")
-            .build();
+        let event =
+            AuditEventBuilder::auth_success("testuser", Some("192.168.1.1".into()), "password")
+                .build();
 
         let encoder = FormatEncoder::new(FormatConfig::default());
         let json = encoder.encode(&event).unwrap();
@@ -470,8 +477,9 @@ mod tests {
 
     #[test]
     fn test_cef_encoding() {
-        let event = AuditEventBuilder::auth_success("testuser", Some("192.168.1.1".into()), "password")
-            .build();
+        let event =
+            AuditEventBuilder::auth_success("testuser", Some("192.168.1.1".into()), "password")
+                .build();
 
         let encoder = FormatEncoder::new(FormatConfig {
             format: AuditFormat::Cef,
@@ -486,8 +494,9 @@ mod tests {
 
     #[test]
     fn test_syslog_encoding() {
-        let event = AuditEventBuilder::auth_failure("baduser", Some("10.0.0.1".into()), "invalid password")
-            .build();
+        let event =
+            AuditEventBuilder::auth_failure("baduser", Some("10.0.0.1".into()), "invalid password")
+                .build();
 
         let encoder = FormatEncoder::new(FormatConfig {
             format: AuditFormat::Syslog,

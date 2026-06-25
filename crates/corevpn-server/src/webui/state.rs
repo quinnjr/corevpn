@@ -1,9 +1,9 @@
 //! Web UI shared state
 
-use std::sync::Arc;
-use parking_lot::RwLock;
 use corevpn_config::ServerConfig;
 use corevpn_core::SessionManager;
+use parking_lot::RwLock;
+use std::sync::Arc;
 
 /// Shared state for web UI handlers
 #[derive(Clone)]

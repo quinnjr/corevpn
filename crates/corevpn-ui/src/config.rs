@@ -204,18 +204,16 @@ impl Default for NotificationConfig {
 impl UiConfig {
     /// Load configuration from file.
     pub fn load(path: &PathBuf) -> Result<Self, ConfigError> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| ConfigError::IoError(e.to_string()))?;
-        toml::from_str(&content)
-            .map_err(|e| ConfigError::ParseError(e.to_string()))
+        let content =
+            std::fs::read_to_string(path).map_err(|e| ConfigError::IoError(e.to_string()))?;
+        toml::from_str(&content).map_err(|e| ConfigError::ParseError(e.to_string()))
     }
 
     /// Save configuration to file.
     pub fn save(&self, path: &PathBuf) -> Result<(), ConfigError> {
-        let content = toml::to_string_pretty(self)
-            .map_err(|e| ConfigError::SerializeError(e.to_string()))?;
-        std::fs::write(path, content)
-            .map_err(|e| ConfigError::IoError(e.to_string()))
+        let content =
+            toml::to_string_pretty(self).map_err(|e| ConfigError::SerializeError(e.to_string()))?;
+        std::fs::write(path, content).map_err(|e| ConfigError::IoError(e.to_string()))
     }
 
     /// Get the default configuration path.

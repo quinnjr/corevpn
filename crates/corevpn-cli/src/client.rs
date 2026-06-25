@@ -7,12 +7,12 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use tokio::net::UdpSocket;
-use tracing::{debug, info, warn, error};
+use tracing::{debug, error, info, warn};
 
 use corevpn_crypto::{CipherSuite, HmacAuth, KeyMaterial};
 use corevpn_protocol::{
-    KeyMethodV2, ProcessedPacket, ProtocolSession, ProtocolState,
-    PushReply, TlsClientHandler, create_client_config, load_certs_from_pem, load_key_from_pem,
+    KeyMethodV2, ProcessedPacket, ProtocolSession, ProtocolState, PushReply, TlsClientHandler,
+    create_client_config, load_certs_from_pem, load_key_from_pem,
 };
 
 use crate::ovpn::OvpnConfig;
@@ -70,7 +70,10 @@ impl VpnClient {
         &self,
         event_tx: Option<tokio::sync::mpsc::UnboundedSender<ConnectionEvent>>,
     ) -> Result<()> {
-        info!("Connecting to {} via {}...", self.config.remote, self.config.protocol);
+        info!(
+            "Connecting to {} via {}...",
+            self.config.remote, self.config.protocol
+        );
 
         // Determine cipher suite
         let cipher_suite = match self.config.cipher.to_uppercase().as_str() {
@@ -80,9 +83,12 @@ impl VpnClient {
         };
 
         // Bind UDP socket
-        let socket = UdpSocket::bind("0.0.0.0:0").await
+        let socket = UdpSocket::bind("0.0.0.0:0")
+            .await
             .context("Failed to bind UDP socket")?;
-        socket.connect(self.config.remote).await
+        socket
+            .connect(self.config.remote)
+            .await
             .context("Failed to connect UDP socket")?;
         info!("Bound local socket to {}", socket.local_addr()?);
 
@@ -91,7 +97,8 @@ impl VpnClient {
 
         // Set up tls-auth if configured
         if let Some(ref ta_key_bytes) = self.config.tls_auth_key {
-            let ta_key: [u8; 256] = ta_key_bytes[..256].try_into()
+            let ta_key: [u8; 256] = ta_key_bytes[..256]
+                .try_into()
                 .context("tls-auth key must be 256 bytes")?;
             let key_dir = self.config.key_direction;
             let hmac_auth = HmacAuth::from_ta_key(&ta_key, false, key_dir)
@@ -102,7 +109,8 @@ impl VpnClient {
 
         // Phase 1: Send hard reset to server
         info!("Sending HARD_RESET_CLIENT_V2...");
-        let hard_reset = session.create_hard_reset_client()
+        let hard_reset = session
+            .create_hard_reset_client()
             .map_err(|e| anyhow::anyhow!("Failed to create hard reset: {}", e))?;
         socket.send(&hard_reset).await?;
 
@@ -130,12 +138,14 @@ impl VpnClient {
         let mut tls = tls;
 
         // Get initial TLS ClientHello
-        let client_hello = tls.get_outgoing()
+        let client_hello = tls
+            .get_outgoing()
             .map_err(|e| anyhow::anyhow!("Failed to get ClientHello: {}", e))?
             .context("No ClientHello data")?;
 
         // Send ClientHello via control channel
-        let ctrl_packets = session.create_control_packets(client_hello)
+        let ctrl_packets = session
+            .create_control_packets(client_hello)
             .map_err(|e| anyhow::anyhow!("Failed to create control packets: {}", e))?;
         for pkt in &ctrl_packets {
             socket.send(pkt).await?;
@@ -158,9 +168,9 @@ impl VpnClient {
             ),
             username: None,
             password: None,
-            peer_info: Some(format!(
-                "IV_VER=corevpn-0.4.0\nIV_PLAT=linux\nIV_NCP=2\nIV_TCPNL=1\nIV_PROTO=30\nIV_CIPHERS=CHACHA20-POLY1305:AES-256-GCM:AES-128-GCM\n"
-            )),
+            peer_info: Some(
+                "IV_VER=corevpn-0.4.0\nIV_PLAT=linux\nIV_NCP=2\nIV_TCPNL=1\nIV_PROTO=30\nIV_CIPHERS=CHACHA20-POLY1305:AES-256-GCM:AES-128-GCM\n".to_string()
+            ),
         };
 
         let km_bytes = client_km.encode(false); // false = client
@@ -177,15 +187,13 @@ impl VpnClient {
             }
 
             // Receive data from server
-            let n = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                socket.recv(&mut buf),
-            )
-            .await
-            .context("Timeout during TLS handshake")?
-            .context("Failed to receive during TLS handshake")?;
+            let n = tokio::time::timeout(std::time::Duration::from_secs(10), socket.recv(&mut buf))
+                .await
+                .context("Timeout during TLS handshake")?
+                .context("Failed to receive during TLS handshake")?;
 
-            let result = session.process_packet(&buf[..n])
+            let result = session
+                .process_packet(&buf[..n])
                 .map_err(|e| anyhow::anyhow!("Failed to process packet during handshake: {}", e))?;
 
             match result {
@@ -215,16 +223,20 @@ impl VpnClient {
                             .map_err(|e| anyhow::anyhow!("Failed to write key_method_v2: {}", e))?;
 
                         // Now flush everything: TLS Finished + KM2 together
-                        self.flush_tls_to_socket(&mut tls, &mut session, &socket).await?;
+                        self.flush_tls_to_socket(&mut tls, &mut session, &socket)
+                            .await?;
                         handshake_complete = true;
                     } else {
                         // Normal handshake: flush TLS response data
                         while tls.wants_write() {
-                            if let Some(tls_out) = tls.get_outgoing()
+                            if let Some(tls_out) = tls
+                                .get_outgoing()
                                 .map_err(|e| anyhow::anyhow!("TLS outgoing failed: {}", e))?
                             {
-                                let ctrl_packets = session.create_control_packets(tls_out)
-                                    .map_err(|e| anyhow::anyhow!("Failed to create control packets: {}", e))?;
+                                let ctrl_packets =
+                                    session.create_control_packets(tls_out).map_err(|e| {
+                                        anyhow::anyhow!("Failed to create control packets: {}", e)
+                                    })?;
                                 for pkt in &ctrl_packets {
                                     socket.send(pkt).await?;
                                 }
@@ -270,14 +282,23 @@ impl VpnClient {
             }
 
             // Try to read plaintext first (data may already be buffered)
-            let n = tls.read_plaintext(&mut plaintext_buf)
+            let n = tls
+                .read_plaintext(&mut plaintext_buf)
                 .map_err(|e| anyhow::anyhow!("TLS read failed: {}", e))?;
             if n > 0 {
                 total_plaintext.extend_from_slice(&plaintext_buf[..n]);
-                debug!("Read {} bytes of TLS plaintext (total: {})", n, total_plaintext.len());
+                debug!(
+                    "Read {} bytes of TLS plaintext (total: {})",
+                    n,
+                    total_plaintext.len()
+                );
 
                 // Try to parse messages from plaintext
-                self.try_parse_server_messages(&mut total_plaintext, &mut server_km, &mut push_reply)?;
+                self.try_parse_server_messages(
+                    &mut total_plaintext,
+                    &mut server_km,
+                    &mut push_reply,
+                )?;
 
                 if push_reply.is_some() {
                     break;
@@ -294,10 +315,14 @@ impl VpnClient {
             .context("Timeout waiting for server key exchange (if OAuth, did you complete auth?)")?
             .context("Failed to receive during key exchange")?;
 
-            debug!("Received {} bytes from server during KM exchange", recv_result);
+            debug!(
+                "Received {} bytes from server during KM exchange",
+                recv_result
+            );
 
-            let result = session.process_packet(&buf[..recv_result])
-                .map_err(|e| anyhow::anyhow!("Failed to process packet during key exchange: {}", e))?;
+            let result = session.process_packet(&buf[..recv_result]).map_err(|e| {
+                anyhow::anyhow!("Failed to process packet during key exchange: {}", e)
+            })?;
 
             match result {
                 ProcessedPacket::TlsData(records) => {
@@ -314,7 +339,8 @@ impl VpnClient {
                     }
 
                     // Flush any TLS responses
-                    self.flush_tls_to_socket(&mut tls, &mut session, &socket).await?;
+                    self.flush_tls_to_socket(&mut tls, &mut session, &socket)
+                        .await?;
                 }
                 ProcessedPacket::None => {
                     debug!("Got None (ACK) during KM exchange");
@@ -345,7 +371,9 @@ impl VpnClient {
         if let Some(ref tx) = event_tx {
             let _ = tx.send(ConnectionEvent::PushReply {
                 ifconfig: push_reply.ifconfig.clone(),
-                routes: push_reply.routes.iter()
+                routes: push_reply
+                    .routes
+                    .iter()
                     .map(|r| (r.network.clone(), r.netmask.clone()))
                     .collect(),
                 dns: push_reply.dns.clone(),
@@ -357,7 +385,8 @@ impl VpnClient {
         // Phase 5: Key derivation via OpenVPN PRF
         info!("Deriving data channel keys...");
         let client_sid = *session.local_session_id();
-        let server_sid = session.remote_session_id()
+        let server_sid = session
+            .remote_session_id()
             .copied()
             .context("Missing remote session ID")?;
 
@@ -365,12 +394,9 @@ impl VpnClient {
         let mut seed1 = Vec::with_capacity(64);
         seed1.extend_from_slice(&client_random1);
         seed1.extend_from_slice(&server_km.random1);
-        let master_secret = corevpn_crypto::openvpn_prf(
-            &pre_master,
-            b"OpenVPN master secret",
-            &seed1,
-            48,
-        ).map_err(|e| anyhow::anyhow!("PRF master secret failed: {}", e))?;
+        let master_secret =
+            corevpn_crypto::openvpn_prf(&pre_master, b"OpenVPN master secret", &seed1, 48)
+                .map_err(|e| anyhow::anyhow!("PRF master secret failed: {}", e))?;
 
         debug!("PRF master_secret[..8]={:02x?}", &master_secret[..8]);
 
@@ -381,12 +407,9 @@ impl VpnClient {
         seed2.extend_from_slice(&server_km.random2);
         seed2.extend_from_slice(&client_sid);
         seed2.extend_from_slice(&server_sid);
-        let key_block = corevpn_crypto::openvpn_prf(
-            &master_secret,
-            b"OpenVPN key expansion",
-            &seed2,
-            256,
-        ).map_err(|e| anyhow::anyhow!("PRF key expansion failed: {}", e))?;
+        let key_block =
+            corevpn_crypto::openvpn_prf(&master_secret, b"OpenVPN key expansion", &seed2, 256)
+                .map_err(|e| anyhow::anyhow!("PRF key expansion failed: {}", e))?;
 
         let km = KeyMaterial::from_openvpn_key2_block(&key_block);
 
@@ -395,7 +418,9 @@ impl VpnClient {
         info!("Installed data channel keys");
 
         // Phase 6: Configure TUN device
-        let (ifconfig_ip, ifconfig_mask) = push_reply.ifconfig.as_ref()
+        let (ifconfig_ip, ifconfig_mask) = push_reply
+            .ifconfig
+            .as_ref()
             .context("PUSH_REPLY missing ifconfig")?
             .clone();
 
@@ -423,7 +448,8 @@ impl VpnClient {
 
         // Phase 7: Data plane - forward packets between TUN and UDP
         info!("Starting data plane forwarding...");
-        self.run_data_plane(socket, session, tun_dev, &push_reply).await
+        self.run_data_plane(socket, session, tun_dev, &push_reply)
+            .await
     }
 
     /// Set up TLS client handler
@@ -442,10 +468,8 @@ impl VpnClient {
             .map_err(|e| anyhow::anyhow!("Failed to load client key: {}", e))?;
 
         // Create TLS config
-        let tls_config = create_client_config(
-            ca_certs,
-            Some((client_certs, client_key)),
-        ).map_err(|e| anyhow::anyhow!("Failed to create TLS config: {}", e))?;
+        let tls_config = create_client_config(ca_certs, Some((client_certs, client_key)))
+            .map_err(|e| anyhow::anyhow!("Failed to create TLS config: {}", e))?;
 
         // Create TLS handler - use "corevpn" as server name (will be validated by our custom verifier)
         let server_name = rustls::pki_types::ServerName::try_from("corevpn")
@@ -464,7 +488,8 @@ impl VpnClient {
         push_reply: &PushReply,
     ) -> Result<tun::AsyncDevice> {
         let mut config = tun::Configuration::default();
-        config.address(ip.parse::<std::net::Ipv4Addr>()?)
+        config
+            .address(ip.parse::<std::net::Ipv4Addr>()?)
             .netmask(mask.parse::<std::net::Ipv4Addr>()?)
             .mtu(1500)
             .up();
@@ -487,7 +512,10 @@ impl VpnClient {
             info!("Adding route: {} {} via VPN", route.network, route.netmask);
             // Routes will be configured via the OS
             if let Err(e) = add_route(&route.network, &route.netmask, ip) {
-                warn!("Failed to add route {} {}: {}", route.network, route.netmask, e);
+                warn!(
+                    "Failed to add route {} {}: {}",
+                    route.network, route.netmask, e
+                );
             }
         }
 
@@ -510,7 +538,8 @@ impl VpnClient {
         // Collect all pending TLS output first
         let mut all_tls_data = Vec::new();
         while tls.wants_write() {
-            if let Some(tls_out) = tls.get_outgoing()
+            if let Some(tls_out) = tls
+                .get_outgoing()
                 .map_err(|e| anyhow::anyhow!("TLS outgoing failed: {}", e))?
             {
                 all_tls_data.extend_from_slice(&tls_out);
@@ -519,9 +548,13 @@ impl VpnClient {
             }
         }
         if !all_tls_data.is_empty() {
-            debug!("Flushing {} bytes of TLS data to control channel", all_tls_data.len());
+            debug!(
+                "Flushing {} bytes of TLS data to control channel",
+                all_tls_data.len()
+            );
             let tls_data = bytes::Bytes::from(all_tls_data);
-            let ctrl_packets = session.create_control_packets(tls_data)
+            let ctrl_packets = session
+                .create_control_packets(tls_data)
                 .map_err(|e| anyhow::anyhow!("Failed to create control packets: {}", e))?;
             for pkt in &ctrl_packets {
                 socket.send(pkt).await?;
@@ -549,7 +582,10 @@ impl VpnClient {
                     *total_plaintext = remaining;
 
                     *server_km = Some(km);
-                    debug!("Remaining plaintext after KM: {} bytes", total_plaintext.len());
+                    debug!(
+                        "Remaining plaintext after KM: {} bytes",
+                        total_plaintext.len()
+                    );
                 }
                 Err(e) => {
                     debug!("Not enough data for KeyMethodV2 yet: {}", e);
@@ -572,8 +608,10 @@ impl VpnClient {
             debug!("Checking plaintext for control message: {:?}", msg_str);
 
             if msg_str.starts_with("PUSH_REPLY") {
-                *push_reply = Some(PushReply::parse(msg_str)
-                    .map_err(|e| anyhow::anyhow!("Failed to parse PUSH_REPLY: {}", e))?);
+                *push_reply = Some(
+                    PushReply::parse(msg_str)
+                        .map_err(|e| anyhow::anyhow!("Failed to parse PUSH_REPLY: {}", e))?,
+                );
                 info!("Received PUSH_REPLY");
             } else if msg_str.contains("AUTH_PENDING") {
                 info!("Server requires authentication (pending)");
@@ -591,7 +629,10 @@ impl VpnClient {
                 total_plaintext.clear();
             } else if msg_str.starts_with("INFO_PRE,OPEN_URL:") {
                 // Deprecated OPEN_URL format
-                let url = msg_str.strip_prefix("INFO_PRE,OPEN_URL:").unwrap_or("").trim();
+                let url = msg_str
+                    .strip_prefix("INFO_PRE,OPEN_URL:")
+                    .unwrap_or("")
+                    .trim();
                 info!("Server requires OAuth authentication.");
                 info!("Please open this URL in your browser: {}", url);
                 eprintln!("\n  Open this URL to authenticate:\n  {}\n", url);
@@ -611,10 +652,10 @@ impl VpnClient {
         condition: impl Fn(&ProcessedPacket) -> bool,
     ) -> Result<ProcessedPacket> {
         loop {
-            let n = socket.recv(buf).await
-                .context("Failed to receive packet")?;
+            let n = socket.recv(buf).await.context("Failed to receive packet")?;
 
-            let result = session.process_packet(&buf[..n])
+            let result = session
+                .process_packet(&buf[..n])
                 .map_err(|e| anyhow::anyhow!("Failed to process packet: {}", e))?;
 
             if condition(&result) {
@@ -645,7 +686,10 @@ impl VpnClient {
         let mut ping_timer = tokio::time::interval(ping_interval);
         ping_timer.tick().await; // First tick is immediate
 
-        info!("Data plane active (ping: {}s, restart: {}s)", push_reply.ping, push_reply.ping_restart);
+        info!(
+            "Data plane active (ping: {}s, restart: {}s)",
+            push_reply.ping, push_reply.ping_restart
+        );
 
         loop {
             tokio::select! {
@@ -788,7 +832,13 @@ fn add_route(network: &str, netmask: &str, gateway: &str) -> Result<()> {
         let prefix_len = mask_bits.count_ones();
 
         let output = Command::new("ip")
-            .args(["route", "add", &format!("{}/{}", network, prefix_len), "via", gateway])
+            .args([
+                "route",
+                "add",
+                &format!("{}/{}", network, prefix_len),
+                "via",
+                gateway,
+            ])
             .output()
             .context("Failed to execute ip route add")?;
 

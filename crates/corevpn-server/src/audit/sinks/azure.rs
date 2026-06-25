@@ -5,7 +5,7 @@
 //! - Azure Event Hub
 //! - Azure Sentinel
 
-use super::{AuditSink, AuditError, AuditEvent};
+use super::{AuditError, AuditEvent, AuditSink};
 use crate::audit::formats::{AuditFormat, FormatConfig, FormatEncoder};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -42,10 +42,18 @@ pub struct AzureMonitorConfig {
     pub flush_interval_secs: u64,
 }
 
-fn default_log_type() -> String { "CoreVPNAudit".to_string() }
-fn default_time_field() -> String { "TimeGenerated".to_string() }
-fn default_batch_size() -> usize { 100 }
-fn default_flush_interval() -> u64 { 5 }
+fn default_log_type() -> String {
+    "CoreVPNAudit".to_string()
+}
+fn default_time_field() -> String {
+    "TimeGenerated".to_string()
+}
+fn default_batch_size() -> usize {
+    100
+}
+fn default_flush_interval() -> u64 {
+    5
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -107,7 +115,9 @@ impl AzureMonitorSink {
         );
 
         let body = serde_json::to_string(&records)?;
-        let date = chrono::Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+        let date = chrono::Utc::now()
+            .format("%a, %d %b %Y %H:%M:%S GMT")
+            .to_string();
         let _signature = self.build_signature(&date, body.len());
 
         log::debug!(
@@ -223,7 +233,11 @@ impl AzureEventHubSink {
         }
 
         let endpoint = self.get_endpoint();
-        log::debug!("Would send {} events to Event Hub: {}", events.len(), endpoint);
+        log::debug!(
+            "Would send {} events to Event Hub: {}",
+            events.len(),
+            endpoint
+        );
 
         Ok(())
     }
@@ -288,8 +302,12 @@ pub struct AzureSentinelConfig {
     pub batch_size: usize,
 }
 
-fn default_sentinel_log_type() -> String { "CoreVPNSecurity".to_string() }
-fn default_true() -> bool { true }
+fn default_sentinel_log_type() -> String {
+    "CoreVPNSecurity".to_string()
+}
+fn default_true() -> bool {
+    true
+}
 
 /// Azure Sentinel sink (via Log Analytics)
 pub struct AzureSentinelSink {

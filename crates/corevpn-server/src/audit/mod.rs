@@ -17,7 +17,7 @@ pub mod sinks;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-pub use events::{AuditEvent, AuditEventBuilder, AuditSeverity, AuditCategory};
+pub use events::{AuditCategory, AuditEvent, AuditEventBuilder, AuditSeverity};
 pub use formats::{AuditFormat, FormatConfig};
 pub use sinks::{AuditSink, SinkConfig};
 
@@ -85,10 +85,7 @@ impl AuditLogger {
         Ok(sinks)
     }
 
-    async fn process_events(
-        mut rx: mpsc::Receiver<AuditEvent>,
-        sinks: Vec<Arc<dyn AuditSink>>,
-    ) {
+    async fn process_events(mut rx: mpsc::Receiver<AuditEvent>, sinks: Vec<Arc<dyn AuditSink>>) {
         while let Some(event) = rx.recv().await {
             for sink in &sinks {
                 if let Err(e) = sink.send(&event).await {
@@ -151,10 +148,20 @@ pub struct AuditConfig {
     pub categories: Vec<AuditCategory>,
 }
 
-fn default_enabled() -> bool { true }
-fn default_buffer_size() -> usize { 10000 }
-fn default_true() -> bool { true }
-fn default_false() -> bool { false }
+fn default_enabled() -> bool {
+    true
+}
+fn default_buffer_size() -> usize {
+    10000
+}
+// Retained as a serde default helper for config fields not yet wired up.
+#[allow(dead_code)]
+fn default_true() -> bool {
+    true
+}
+fn default_false() -> bool {
+    false
+}
 fn default_categories() -> Vec<AuditCategory> {
     vec![
         AuditCategory::Authentication,

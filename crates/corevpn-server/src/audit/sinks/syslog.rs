@@ -1,6 +1,6 @@
 //! Syslog Audit Sink
 
-use super::{AuditSink, AuditError, AuditEvent};
+use super::{AuditError, AuditEvent, AuditSink};
 use crate::audit::formats::{AuditFormat, FormatConfig, FormatEncoder};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -63,11 +63,21 @@ pub struct SyslogConfig {
     pub reconnect_interval_secs: u64,
 }
 
-fn default_port() -> u16 { 514 }
-fn default_facility() -> u8 { 4 } // security/auth
-fn default_app_name() -> String { "corevpn".to_string() }
-fn default_true() -> bool { true }
-fn default_reconnect_interval() -> u64 { 5 }
+fn default_port() -> u16 {
+    514
+}
+fn default_facility() -> u8 {
+    4
+} // security/auth
+fn default_app_name() -> String {
+    "corevpn".to_string()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_reconnect_interval() -> u64 {
+    5
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

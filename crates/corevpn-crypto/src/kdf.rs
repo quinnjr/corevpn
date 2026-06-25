@@ -6,7 +6,7 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::{CryptoError, Result, CipherSuite, DataChannelKey};
+use crate::{CipherSuite, CryptoError, DataChannelKey, Result};
 
 /// OpenVPN-style key material derived from TLS session
 #[derive(ZeroizeOnDrop)]
@@ -102,7 +102,10 @@ impl KeyMaterial {
     /// OpenVPN key2 struct layout. Use `from_openvpn_key2_block` instead.
     #[allow(dead_code)]
     pub fn from_openvpn_aead_key_block(block: &[u8]) -> Self {
-        assert!(block.len() >= 88, "AEAD key block must be at least 88 bytes");
+        assert!(
+            block.len() >= 88,
+            "AEAD key block must be at least 88 bytes"
+        );
         let mut material = Self {
             client_write_key: [0u8; 32],
             server_write_key: [0u8; 32],
@@ -121,33 +124,35 @@ impl KeyMaterial {
     /// Create key material from an OpenVPN PRF key2 struct block for AEAD ciphers.
     ///
     /// OpenVPN's PRF outputs 256 bytes directly into the key2.keys struct:
-    ///   struct key { uint8_t cipher[64]; uint8_t hmac[64]; };
-    ///   struct key2 { int n; struct key keys[2]; };
+    /// ```c
+    /// struct key { uint8_t cipher[64]; uint8_t hmac[64]; };
+    /// struct key2 { int n; struct key keys[2]; };
+    /// ```
     ///
     /// Layout (256 bytes):
-    /// - bytes   0..64:   key[0].cipher (first 32 used as cipher key)
-    /// - bytes  64..128:  key[0].hmac   (first 12 used as implicit IV for AEAD)
-    /// - bytes 128..192:  key[1].cipher (first 32 used as cipher key)
-    /// - bytes 192..256:  key[1].hmac   (first 12 used as implicit IV for AEAD)
+    /// - bytes   0..64:   `key[0].cipher` (first 32 used as cipher key)
+    /// - bytes  64..128:  `key[0].hmac`   (first 12 used as implicit IV for AEAD)
+    /// - bytes 128..192:  `key[1].cipher` (first 32 used as cipher key)
+    /// - bytes 192..256:  `key[1].hmac`   (first 12 used as implicit IV for AEAD)
     ///
     /// Key direction mapping (OpenVPN key_direction_state_init):
-    ///   KEY_DIRECTION_NORMAL (client):  out_key=0, in_key=1
-    ///   KEY_DIRECTION_INVERSE (server): out_key=1, in_key=0
+    /// - KEY_DIRECTION_NORMAL (client):  `out_key=0, in_key=1`
+    /// - KEY_DIRECTION_INVERSE (server): `out_key=1, in_key=0`
     ///
     /// Therefore:
-    /// - key[0] = client encrypt / server decrypt (client→server direction)
-    /// - key[1] = server encrypt / client decrypt (server→client direction)
+    /// - `key[0]` = client encrypt / server decrypt (client→server direction)
+    /// - `key[1]` = server encrypt / client decrypt (server→client direction)
     ///
-    /// OpenVPN AEAD implicit IV (from key_ctx_update_implicit_iv in crypto.c):
-    ///   For non-epoch keys:
-    ///     impl_iv_len = cipher_iv_length - sizeof(packet_id_type) = 12 - 4 = 8 bytes
-    ///     impl_iv_offset = sizeof(packet_id_type) = 4
-    ///     implicit_iv = [0, 0, 0, 0, hmac[0..8]]
+    /// OpenVPN AEAD implicit IV (from key_ctx_update_implicit_iv in crypto.c).
+    /// For non-epoch keys:
+    /// - `impl_iv_len = cipher_iv_length - sizeof(packet_id_type) = 12 - 4 = 8` bytes
+    /// - `impl_iv_offset = sizeof(packet_id_type) = 4`
+    /// - `implicit_iv = [0, 0, 0, 0, hmac[0..8]]`
     ///
     /// Nonce construction (openvpn_encrypt_aead in crypto.c):
-    ///   iv[0..12] = [packet_id_be(4), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-    ///   for i in 0..12: iv[i] ^= implicit_iv[i]
-    ///   Result: [pid(4), hmac[0..8]] (concatenation, since XOR with 0 is identity)
+    /// - `iv[0..12] = [packet_id_be(4), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]`
+    /// - `for i in 0..12: iv[i] ^= implicit_iv[i]`
+    /// - Result: `[pid(4), hmac[0..8]]` (concatenation, since XOR with 0 is identity)
     pub fn from_openvpn_key2_block(block: &[u8]) -> Self {
         assert!(block.len() >= 256, "key2 block must be at least 256 bytes");
         let mut material = Self {
@@ -184,11 +189,7 @@ impl KeyMaterial {
 }
 
 /// Derive a single key from input key material
-pub fn derive_single_key(
-    ikm: &[u8],
-    salt: &[u8],
-    info: &[u8],
-) -> Result<[u8; 32]> {
+pub fn derive_single_key(ikm: &[u8], salt: &[u8], info: &[u8]) -> Result<[u8; 32]> {
     let hkdf = Hkdf::<Sha256>::new(Some(salt), ikm);
     let mut okm = zeroize::Zeroizing::new([0u8; 32]);
     hkdf.expand(info, okm.as_mut())
@@ -218,7 +219,7 @@ pub fn openvpn_prf(secret: &[u8], label: &[u8], seed: &[u8], output_len: usize) 
     combined_seed.extend_from_slice(seed);
 
     // Split the secret into two halves (overlapping by 1 if odd length)
-    let half = (secret.len() + 1) / 2; // ceil(len/2)
+    let half = secret.len().div_ceil(2); // ceil(len/2)
     let s1 = &secret[..half];
     let s2 = &secret[secret.len() / 2..]; // floor(len/2)..end
 

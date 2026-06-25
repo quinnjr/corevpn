@@ -12,26 +12,25 @@ use bytes::Bytes;
 use parking_lot::RwLock;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
-use tracing::{info, warn, error, debug, trace};
+use tracing::{debug, error, info, trace, warn};
 use tun::Device as TunDevice;
 
 /// OpenVPN keepalive ping magic payload
 const OPENVPN_PING_PAYLOAD: [u8; 16] = [
-    0x2a, 0x18, 0x7b, 0xf3, 0x64, 0x1e, 0xb4, 0xcb,
-    0x07, 0xed, 0x2d, 0x0a, 0x98, 0x1f, 0xc7, 0x48,
+    0x2a, 0x18, 0x7b, 0xf3, 0x64, 0x1e, 0xb4, 0xcb, 0x07, 0xed, 0x2d, 0x0a, 0x98, 0x1f, 0xc7, 0x48,
 ];
 
 use corevpn_config::{ConnectionLogMode, ServerConfig};
-use corevpn_core::{SessionManager, AddressPool};
+use corevpn_core::{AddressPool, SessionManager};
 use corevpn_crypto::{CipherSuite, HmacAuth, parse_static_key};
 use corevpn_protocol::{
-    OpCode, ProtocolSession, ProtocolState, ProcessedPacket,
-    TlsHandler, create_server_config, load_certs_from_pem, load_key_from_pem,
+    OpCode, ProcessedPacket, ProtocolSession, ProtocolState, TlsHandler, create_server_config,
+    load_certs_from_pem, load_key_from_pem,
 };
 
 use crate::connection_log::{
-    ConnectionLogger, ConnectionEvent, ConnectionEventBuilder, ConnectionId,
-    AuthMethod, DisconnectReason, TransferStats, Anonymizer, create_logger,
+    Anonymizer, AuthMethod, ConnectionEvent, ConnectionEventBuilder, ConnectionId,
+    ConnectionLogger, DisconnectReason, TransferStats, create_logger,
 };
 
 /// Active connection state
@@ -123,6 +122,8 @@ pub struct AuthCompleted {
 /// Pending OAuth auth info (shared between HTTP server and VPN)
 pub struct PendingOAuth {
     pub peer_addr: SocketAddr,
+    // Retained for future expiry of stale pending OAuth entries.
+    #[allow(dead_code)]
     pub created_at: Instant,
 }
 
@@ -132,6 +133,8 @@ pub type PendingOAuthMap = Arc<RwLock<HashMap<String, PendingOAuth>>>;
 /// Server state
 pub struct VpnServer {
     config: ServerConfig,
+    // Retained for future session lifecycle integration; not yet consulted.
+    #[allow(dead_code)]
     session_manager: SessionManager,
     address_pool: AddressPool,
     connections: ConnectionMap,
@@ -149,7 +152,9 @@ pub struct VpnServer {
 impl VpnServer {
     /// Create a new VPN server
     pub async fn new(config: ServerConfig) -> Result<Self> {
-        let session_lifetime_sec = config.oauth.as_ref()
+        let session_lifetime_sec = config
+            .oauth
+            .as_ref()
             .map(|o| o.session_lifetime_sec as i64)
             .unwrap_or(86400);
         let session_manager = SessionManager::new(
@@ -157,7 +162,10 @@ impl VpnServer {
             chrono::Duration::seconds(session_lifetime_sec),
         );
 
-        let subnet = config.network.subnet.parse()
+        let subnet = config
+            .network
+            .subnet
+            .parse()
             .map_err(|e| anyhow::anyhow!("Invalid subnet: {}", e))?;
 
         let address_pool = AddressPool::new(Some(subnet), None)
@@ -315,9 +323,14 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
     let socket = Arc::new(socket);
 
     // Create TUN device for data plane
-    let subnet_net: ipnet::Ipv4Net = config.network.subnet.parse()
+    let subnet_net: ipnet::Ipv4Net = config
+        .network
+        .subnet
+        .parse()
         .map_err(|e| anyhow::anyhow!("Invalid subnet for TUN: {}", e))?;
-    let gateway_ip = server.address_pool.gateway_v4()
+    let gateway_ip = server
+        .address_pool
+        .gateway_v4()
         .unwrap_or(Ipv4Addr::new(10, 8, 0, 1));
 
     let mut tun_config = tun::Configuration::default();
@@ -334,16 +347,25 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
 
     let tun_device = tun::create(&tun_config)
         .map_err(|e| anyhow::anyhow!("Failed to create TUN device: {}", e))?;
-    let tun_name = tun_device.name()
+    let tun_name = tun_device
+        .name()
         .map_err(|e| anyhow::anyhow!("Failed to get TUN device name: {}", e))?;
-    info!("TUN device created: {} (IP: {}/{})", tun_name, gateway_ip, subnet_net.prefix_len());
+    info!(
+        "TUN device created: {} (IP: {}/{})",
+        tun_name,
+        gateway_ip,
+        subnet_net.prefix_len()
+    );
 
     let tun_device = tun::AsyncDevice::new(tun_device)
         .map_err(|e| anyhow::anyhow!("Failed to create async TUN device: {}", e))?;
 
     // Enable IP forwarding
     if let Err(e) = std::fs::write("/proc/sys/net/ipv4/ip_forward", "1") {
-        warn!("Failed to enable IP forwarding (may already be enabled): {}", e);
+        warn!(
+            "Failed to enable IP forwarding (may already be enabled): {}",
+            e
+        );
     } else {
         info!("IP forwarding enabled");
     }
@@ -353,13 +375,46 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
     info!("Setting up NAT on interface: {}", default_iface);
 
     let _ = std::process::Command::new("iptables")
-        .args(["-t", "nat", "-A", "POSTROUTING", "-s", &config.network.subnet, "-o", &default_iface, "-j", "MASQUERADE"])
+        .args([
+            "-t",
+            "nat",
+            "-A",
+            "POSTROUTING",
+            "-s",
+            &config.network.subnet,
+            "-o",
+            &default_iface,
+            "-j",
+            "MASQUERADE",
+        ])
         .status();
     let _ = std::process::Command::new("iptables")
-        .args(["-A", "FORWARD", "-i", &tun_name, "-o", &default_iface, "-j", "ACCEPT"])
+        .args([
+            "-A",
+            "FORWARD",
+            "-i",
+            &tun_name,
+            "-o",
+            &default_iface,
+            "-j",
+            "ACCEPT",
+        ])
         .status();
     let _ = std::process::Command::new("iptables")
-        .args(["-A", "FORWARD", "-i", &default_iface, "-o", &tun_name, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"])
+        .args([
+            "-A",
+            "FORWARD",
+            "-i",
+            &default_iface,
+            "-o",
+            &tun_name,
+            "-m",
+            "state",
+            "--state",
+            "RELATED,ESTABLISHED",
+            "-j",
+            "ACCEPT",
+        ])
         .status();
     info!("NAT/masquerading configured");
 
@@ -392,7 +447,8 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         loop {
             interval.tick().await;
             if idle_timeout_sec > 0 {
-                cleanup_stale_connections(&server_cleanup, Duration::from_secs(idle_timeout_sec)).await;
+                cleanup_stale_connections(&server_cleanup, Duration::from_secs(idle_timeout_sec))
+                    .await;
             }
         }
     });
@@ -410,7 +466,8 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
     });
 
     // Channel for OAuth auth completion notifications
-    let (auth_completed_tx, mut auth_completed_rx) = tokio::sync::mpsc::channel::<AuthCompleted>(32);
+    let (auth_completed_tx, mut auth_completed_rx) =
+        tokio::sync::mpsc::channel::<AuthCompleted>(32);
 
     // Start OAuth HTTP server if OAuth is enabled
     let oauth_enabled = config.oauth.as_ref().map(|o| o.enabled).unwrap_or(false);
@@ -423,11 +480,23 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         let oauth_data_dir = std::path::PathBuf::from(&config.server.data_dir);
 
         tokio::spawn(async move {
-            if let Err(e) = run_oauth_server(oauth_config, pending_oauths, auth_tx, oauth_base_url, listen_port, oauth_data_dir).await {
+            if let Err(e) = run_oauth_server(
+                oauth_config,
+                pending_oauths,
+                auth_tx,
+                oauth_base_url,
+                listen_port,
+                oauth_data_dir,
+            )
+            .await
+            {
                 error!("OAuth HTTPS server error: {}", e);
             }
         });
-        info!("OAuth HTTPS server started on port {}", config.oauth.as_ref().unwrap().oauth_port);
+        info!(
+            "OAuth HTTPS server started on port {}",
+            config.oauth.as_ref().unwrap().oauth_port
+        );
     }
 
     // Main event loop: multiplex UDP recv, TUN read, and keepalive timer
@@ -491,7 +560,15 @@ async fn cleanup_stale_connections(server: &VpnServer, timeout: Duration) {
         let map = server.connections.read();
         map.iter()
             .filter(|(_, conn)| conn.is_stale(timeout))
-            .map(|(addr, conn)| (*addr, conn.connection_id, conn.username.clone(), conn.duration(), conn.stats.clone()))
+            .map(|(addr, conn)| {
+                (
+                    *addr,
+                    conn.connection_id,
+                    conn.username.clone(),
+                    conn.duration(),
+                    conn.stats.clone(),
+                )
+            })
             .collect()
     };
 
@@ -537,8 +614,20 @@ async fn handle_packet(
 
     // Debug: hex dump first bytes of every control packet
     if opcode.is_control() {
-        let hex: String = data.iter().take(64).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
-        trace!("Raw {} packet from {} ({} bytes): {}{}", opcode, peer_addr, data.len(), hex, if data.len() > 64 { "..." } else { "" });
+        let hex: String = data
+            .iter()
+            .take(64)
+            .map(|b| format!("{:02x}", b))
+            .collect::<Vec<_>>()
+            .join(" ");
+        trace!(
+            "Raw {} packet from {} ({} bytes): {}{}",
+            opcode,
+            peer_addr,
+            data.len(),
+            hex,
+            if data.len() > 64 { "..." } else { "" }
+        );
     }
 
     match opcode {
@@ -569,17 +658,25 @@ async fn handle_hard_reset(
     // If so, this is a UDP retransmit — resend the cached response
     // instead of creating a new session (which would change the session ID
     // and confuse the client).
-    {
+    // Extract any cached response while holding the lock, then drop the guard
+    // before awaiting the send (avoids holding a sync lock across .await).
+    let cached_response = {
         let connections = server.connections.read();
-        if let Some(existing) = connections.get(&peer_addr) {
+        connections.get(&peer_addr).and_then(|existing| {
             if !existing.is_stale(Duration::from_secs(30)) {
-                if let Some(ref cached_response) = existing.hard_reset_response {
-                    debug!("Retransmitting cached hard reset response to {} (UDP retry)", peer_addr);
-                    socket.send_to(cached_response, peer_addr).await?;
-                    return Ok(());
-                }
+                existing.hard_reset_response.clone()
+            } else {
+                None
             }
-        }
+        })
+    };
+    if let Some(cached_response) = cached_response {
+        debug!(
+            "Retransmitting cached hard reset response to {} (UDP retry)",
+            peer_addr
+        );
+        socket.send_to(&cached_response, peer_addr).await?;
+        return Ok(());
     }
 
     info!("New connection from {}", peer_addr);
@@ -662,14 +759,25 @@ async fn handle_control_packet(
 
         match result {
             ProcessedPacket::TlsData(records) => {
-                info!("Received {} TLS record(s) from {} (total {} bytes)", records.len(), peer_addr, records.iter().map(|r| r.len()).sum::<usize>());
+                info!(
+                    "Received {} TLS record(s) from {} (total {} bytes)",
+                    records.len(),
+                    peer_addr,
+                    records.iter().map(|r| r.len()).sum::<usize>()
+                );
                 for (i, rec) in records.iter().enumerate() {
                     if rec.len() >= 5 {
                         let content_type = rec[0];
                         let tls_version = u16::from_be_bytes([rec[1], rec[2]]);
                         let record_len = u16::from_be_bytes([rec[3], rec[4]]);
-                        debug!("  TLS record[{}]: content_type={} version=0x{:04x} len={} raw_len={}",
-                            i, content_type, tls_version, record_len, rec.len());
+                        debug!(
+                            "  TLS record[{}]: content_type={} version=0x{:04x} len={} raw_len={}",
+                            i,
+                            content_type,
+                            tls_version,
+                            record_len,
+                            rec.len()
+                        );
                     } else {
                         debug!("  TLS record[{}]: too short ({} bytes)", i, rec.len());
                     }
@@ -677,7 +785,11 @@ async fn handle_control_packet(
 
                 // Pass TLS records to TLS handler
                 if let Some(ref mut tls) = conn.tls {
-                    debug!("Feeding {} TLS record(s) to TLS handler for {}", records.len(), peer_addr);
+                    debug!(
+                        "Feeding {} TLS record(s) to TLS handler for {}",
+                        records.len(),
+                        peer_addr
+                    );
                     tls.process_tls_records(records)
                         .map_err(|e| {
                             error!("TLS processing failed for {}: {} -- this may indicate a tls-auth mismatch or certificate issue", peer_addr, e);
@@ -687,14 +799,23 @@ async fn handle_control_packet(
                     // If TLS handler wants to write, get the data and split
                     // into MTU-safe control channel packets
                     while tls.wants_write() {
-                        if let Some(tls_out) = tls.get_outgoing()
+                        if let Some(tls_out) = tls
+                            .get_outgoing()
                             .map_err(|e| anyhow::anyhow!("TLS outgoing failed: {}", e))?
                         {
-                            debug!("Sending {} bytes of TLS data to {} (splitting if needed)", tls_out.len(), peer_addr);
+                            debug!(
+                                "Sending {} bytes of TLS data to {} (splitting if needed)",
+                                tls_out.len(),
+                                peer_addr
+                            );
                             // Wrap TLS data in control packets, splitting large
                             // payloads to avoid IP fragmentation
                             let ctrl_packets = conn.protocol.create_control_packets(tls_out)?;
-                            debug!("Split into {} control packet(s) for {}", ctrl_packets.len(), peer_addr);
+                            debug!(
+                                "Split into {} control packet(s) for {}",
+                                ctrl_packets.len(),
+                                peer_addr
+                            );
                             pending_packets.extend(ctrl_packets);
                         } else {
                             break;
@@ -703,15 +824,19 @@ async fn handle_control_packet(
 
                     // Check if handshake is complete - handle both initial completion
                     // (TlsHandshake → KeyExchange) and deferred KM2 reading (already KeyExchange)
-                    let should_try_km = tls.is_handshake_complete() && matches!(
-                        conn.protocol.state(),
-                        ProtocolState::TlsHandshake | ProtocolState::KeyExchange
-                    );
+                    let should_try_km = tls.is_handshake_complete()
+                        && matches!(
+                            conn.protocol.state(),
+                            ProtocolState::TlsHandshake | ProtocolState::KeyExchange
+                        );
                     if should_try_km {
                         if conn.protocol.state() == ProtocolState::TlsHandshake {
                             let tls_ver = tls.protocol_version().unwrap_or("unknown");
                             let tls_cs = tls.cipher_suite().unwrap_or("unknown");
-                            info!("TLS handshake complete with {} (version={}, cipher={})", peer_addr, tls_ver, tls_cs);
+                            info!(
+                                "TLS handshake complete with {} (version={}, cipher={})",
+                                peer_addr, tls_ver, tls_cs
+                            );
                             conn.protocol.set_state(ProtocolState::KeyExchange);
                             conn.auth_method = AuthMethod::Certificate;
                         }
@@ -720,10 +845,16 @@ async fn handle_control_packet(
                         let mut buf = vec![0u8; 4096];
                         match tls.read_plaintext(&mut buf) {
                             Err(e) => {
-                                warn!("Failed to read TLS plaintext (key_method_v2) from {}: {}", peer_addr, e);
+                                warn!(
+                                    "Failed to read TLS plaintext (key_method_v2) from {}: {}",
+                                    peer_addr, e
+                                );
                             }
                             Ok(0) => {
-                                debug!("TLS handshake complete but no key_method_v2 data yet from {}", peer_addr);
+                                debug!(
+                                    "TLS handshake complete but no key_method_v2 data yet from {}",
+                                    peer_addr
+                                );
                             }
                             Ok(n) => {
                                 debug!("Received {} bytes of key_method_v2 from {}", n, peer_addr);
@@ -733,10 +864,17 @@ async fn handle_control_packet(
                                     Ok(client_km) => {
                                         debug!("Client options: {}", client_km.options);
                                         if let Some(ref pi) = client_km.peer_info {
-                                            let summary: Vec<&str> = pi.lines()
-                                                .filter(|l| l.starts_with("IV_VER=") || l.starts_with("IV_PLAT="))
+                                            let summary: Vec<&str> = pi
+                                                .lines()
+                                                .filter(|l| {
+                                                    l.starts_with("IV_VER=")
+                                                        || l.starts_with("IV_PLAT=")
+                                                })
                                                 .collect();
-                                            debug!("Client peer_info summary: {}", summary.join(", "));
+                                            debug!(
+                                                "Client peer_info summary: {}",
+                                                summary.join(", ")
+                                            );
                                         }
                                         if let Some(ref user) = client_km.username {
                                             conn.username = Some(user.clone());
@@ -744,9 +882,12 @@ async fn handle_control_packet(
 
                                         // Negotiate cipher via NCP (Negotiable Crypto Parameters)
                                         // Parse client's IV_CIPHERS from peer_info
-                                        let negotiated_cipher = if let Some(ref pi) = client_km.peer_info {
+                                        let negotiated_cipher = if let Some(ref pi) =
+                                            client_km.peer_info
+                                        {
                                             // Extract IV_CIPHERS line
-                                            let client_ciphers: Vec<&str> = pi.lines()
+                                            let client_ciphers: Vec<&str> = pi
+                                                .lines()
                                                 .find(|l| l.starts_with("IV_CIPHERS="))
                                                 .map(|l| l.trim_start_matches("IV_CIPHERS="))
                                                 .unwrap_or("")
@@ -754,31 +895,42 @@ async fn handle_control_packet(
                                                 .filter(|s| !s.is_empty())
                                                 .collect();
                                             // Pick first cipher from client list that we support
-                                            let server_cipher = server.config.security.cipher.to_uppercase();
+                                            let server_cipher =
+                                                server.config.security.cipher.to_uppercase();
                                             // Server supports AES-256-GCM, AES-128-GCM, CHACHA20-POLY1305
-                                            let supported = ["AES-256-GCM", "AES-128-GCM", "CHACHA20-POLY1305"];
-                                            client_ciphers.iter()
-                                                .find(|c| supported.contains(&c.to_uppercase().as_str()))
+                                            let supported =
+                                                ["AES-256-GCM", "AES-128-GCM", "CHACHA20-POLY1305"];
+                                            client_ciphers
+                                                .iter()
+                                                .find(|c| {
+                                                    supported.contains(&c.to_uppercase().as_str())
+                                                })
                                                 .map(|c| c.to_string())
                                                 .unwrap_or_else(|| server_cipher.clone())
                                         } else {
                                             server.config.security.cipher.to_uppercase()
                                         };
-                                        debug!("Negotiated cipher: {} for {}", negotiated_cipher, peer_addr);
+                                        debug!(
+                                            "Negotiated cipher: {} for {}",
+                                            negotiated_cipher, peer_addr
+                                        );
 
                                         // Update the session's cipher suite to match the negotiated cipher
-                                        let negotiated_suite = if negotiated_cipher.contains("CHACHA") {
-                                            CipherSuite::ChaCha20Poly1305
-                                        } else {
-                                            CipherSuite::Aes256Gcm
-                                        };
+                                        let negotiated_suite =
+                                            if negotiated_cipher.contains("CHACHA") {
+                                                CipherSuite::ChaCha20Poly1305
+                                            } else {
+                                                CipherSuite::Aes256Gcm
+                                            };
                                         conn.protocol.set_cipher_suite(negotiated_suite);
 
                                         // Generate server's key_method_v2
                                         // Note: server does NOT send pre_master (encode(true) skips it).
                                         // Only random1 and random2 are sent and used.
-                                        let server_random1: [u8; 32] = corevpn_crypto::random_bytes();
-                                        let server_random2: [u8; 32] = corevpn_crypto::random_bytes();
+                                        let server_random1: [u8; 32] =
+                                            corevpn_crypto::random_bytes();
+                                        let server_random2: [u8; 32] =
+                                            corevpn_crypto::random_bytes();
 
                                         let server_km = corevpn_protocol::KeyMethodV2 {
                                             pre_master: [0u8; 48], // not sent on wire (is_server=true)
@@ -796,18 +948,33 @@ async fn handle_control_packet(
                                         // Send server's key_method_v2 via TLS
                                         // is_server=true: omit pre_master from key source
                                         let km_bytes = server_km.encode(true);
-                                        debug!("Sending {} bytes of key_method_v2 to {}", km_bytes.len(), peer_addr);
+                                        debug!(
+                                            "Sending {} bytes of key_method_v2 to {}",
+                                            km_bytes.len(),
+                                            peer_addr
+                                        );
                                         if let Err(e) = tls.write_plaintext(&km_bytes) {
-                                            warn!("Failed to send key_method_v2 to {}: {}", peer_addr, e);
+                                            warn!(
+                                                "Failed to send key_method_v2 to {}: {}",
+                                                peer_addr, e
+                                            );
                                         }
 
                                         // Flush TLS outgoing data
                                         while tls.wants_write() {
-                                            if let Some(tls_out) = tls.get_outgoing()
-                                                .map_err(|e| anyhow::anyhow!("TLS outgoing failed: {}", e))?
+                                            if let Some(tls_out) =
+                                                tls.get_outgoing().map_err(|e| {
+                                                    anyhow::anyhow!("TLS outgoing failed: {}", e)
+                                                })?
                                             {
-                                                debug!("Sending {} bytes of key exchange TLS data to {}", tls_out.len(), peer_addr);
-                                                let ctrl_packets = conn.protocol.create_control_packets(tls_out)?;
+                                                debug!(
+                                                    "Sending {} bytes of key exchange TLS data to {}",
+                                                    tls_out.len(),
+                                                    peer_addr
+                                                );
+                                                let ctrl_packets = conn
+                                                    .protocol
+                                                    .create_control_packets(tls_out)?;
                                                 pending_packets.extend(ctrl_packets);
                                             } else {
                                                 break;
@@ -836,56 +1003,89 @@ async fn handle_control_packet(
                                                 b"OpenVPN master secret",
                                                 &seed1,
                                                 48,
-                                            ).map_err(|e| anyhow::anyhow!("PRF master secret failed: {}", e))?;
+                                            )
+                                            .map_err(|e| {
+                                                anyhow::anyhow!("PRF master secret failed: {}", e)
+                                            })?;
 
                                             // Step 2: expand into key block (256 bytes = key2 struct)
                                             // OpenVPN includes session IDs in the key expansion seed:
                                             //   seed = client_random2 || server_random2 || client_sid(8) || server_sid(8)
                                             // (see openvpn_PRF in ssl.c: client_sid and server_sid are appended)
-                                            let client_sid = conn.protocol.remote_session_id()
-                                                .copied().unwrap_or([0u8; 8]);
+                                            let client_sid = conn
+                                                .protocol
+                                                .remote_session_id()
+                                                .copied()
+                                                .unwrap_or([0u8; 8]);
                                             let server_sid = *conn.protocol.local_session_id();
                                             let mut seed2 = Vec::with_capacity(64 + 16);
                                             seed2.extend_from_slice(&client_km.random2);
                                             seed2.extend_from_slice(&server_random2);
                                             seed2.extend_from_slice(&client_sid);
                                             seed2.extend_from_slice(&server_sid);
-                                            debug!("PRF key expansion seed includes client_sid={:02x?} server_sid={:02x?}",
-                                                &client_sid, &server_sid);
+                                            debug!(
+                                                "PRF key expansion seed includes client_sid={:02x?} server_sid={:02x?}",
+                                                &client_sid, &server_sid
+                                            );
                                             let key_block = corevpn_crypto::openvpn_prf(
                                                 &master_secret,
                                                 b"OpenVPN key expansion",
                                                 &seed2,
                                                 256,
-                                            ).map_err(|e| anyhow::anyhow!("PRF key expansion failed: {}", e))?;
+                                            )
+                                            .map_err(|e| {
+                                                anyhow::anyhow!("PRF key expansion failed: {}", e)
+                                            })?;
 
                                             let km = corevpn_crypto::KeyMaterial::from_openvpn_key2_block(&key_block);
 
                                             conn.protocol.install_keys(&km, true);
-                                            info!("Installed PRF data channel keys for {}", peer_addr);
+                                            info!(
+                                                "Installed PRF data channel keys for {}",
+                                                peer_addr
+                                            );
                                         }
 
                                         // Allocate VPN IP and build push reply
                                         match server.address_pool.allocate() {
                                             Ok(vpn_addr) => {
-                                                let client_ip = vpn_addr.ipv4.map(|ip| ip.to_string()).unwrap_or_default();
-                                                let gateway_ip = server.address_pool.gateway_v4()
+                                                let client_ip = vpn_addr
+                                                    .ipv4
+                                                    .map(|ip| ip.to_string())
+                                                    .unwrap_or_default();
+                                                let gateway_ip = server
+                                                    .address_pool
+                                                    .gateway_v4()
                                                     .map(|ip| ip.to_string())
                                                     .unwrap_or_else(|| "10.8.0.1".to_string());
 
                                                 // Compute subnet mask from config subnet (e.g., "10.8.0.0/24" -> "255.255.255.0")
-                                                let subnet_mask = server.config.network.subnet.parse::<ipnet::Ipv4Net>()
+                                                let subnet_mask = server
+                                                    .config
+                                                    .network
+                                                    .subnet
+                                                    .parse::<ipnet::Ipv4Net>()
                                                     .map(|net| net.netmask().to_string())
-                                                    .unwrap_or_else(|_| "255.255.255.0".to_string());
+                                                    .unwrap_or_else(|_| {
+                                                        "255.255.255.0".to_string()
+                                                    });
 
-                                                info!("Assigned VPN IP {} to {} (gateway: {}, mask: {})", client_ip, peer_addr, gateway_ip, subnet_mask);
+                                                info!(
+                                                    "Assigned VPN IP {} to {} (gateway: {}, mask: {})",
+                                                    client_ip, peer_addr, gateway_ip, subnet_mask
+                                                );
 
                                                 conn.vpn_ip = vpn_addr.ipv4;
 
-                                                let mut push_reply = corevpn_protocol::PushReply::default();
                                                 // For topology subnet, ifconfig needs (client_ip, subnet_mask) not (client_ip, gateway_ip)
-                                                push_reply.ifconfig = Some((client_ip.clone(), subnet_mask));
-                                                push_reply.topology = corevpn_protocol::Topology::Subnet;
+                                                let mut push_reply = corevpn_protocol::PushReply {
+                                                    ifconfig: Some((
+                                                        client_ip.clone(),
+                                                        subnet_mask,
+                                                    )),
+                                                    topology: corevpn_protocol::Topology::Subnet,
+                                                    ..Default::default()
+                                                };
 
                                                 // Add DNS from config
                                                 for dns in &server.config.network.dns {
@@ -893,17 +1093,29 @@ async fn handle_control_packet(
                                                 }
 
                                                 // Add redirect gateway if configured
-                                                push_reply.redirect_gateway = server.config.network.redirect_gateway;
+                                                push_reply.redirect_gateway =
+                                                    server.config.network.redirect_gateway;
                                                 if server.config.network.redirect_gateway {
-                                                    push_reply.route_gateway = Some(gateway_ip.clone());
+                                                    push_reply.route_gateway =
+                                                        Some(gateway_ip.clone());
                                                 }
 
                                                 // Add push_routes from config
-                                                for route_cidr in &server.config.network.push_routes {
-                                                    if let Some((network, netmask)) = cidr_to_netmask(route_cidr) {
-                                                        push_reply.routes.push(corevpn_protocol::PushRoute::new(&network, &netmask));
+                                                for route_cidr in &server.config.network.push_routes
+                                                {
+                                                    if let Some((network, netmask)) =
+                                                        cidr_to_netmask(route_cidr)
+                                                    {
+                                                        push_reply.routes.push(
+                                                            corevpn_protocol::PushRoute::new(
+                                                                &network, &netmask,
+                                                            ),
+                                                        );
                                                     } else {
-                                                        warn!("Invalid push_route CIDR: {}", route_cidr);
+                                                        warn!(
+                                                            "Invalid push_route CIDR: {}",
+                                                            route_cidr
+                                                        );
                                                     }
                                                 }
 
@@ -911,33 +1123,49 @@ async fn handle_control_packet(
                                                 push_reply.ping_restart = 60;
 
                                                 // Push renegotiation interval from config
-                                                push_reply.options.push(format!("reneg-sec {}", server.config.security.reneg_sec));
+                                                push_reply.options.push(format!(
+                                                    "reneg-sec {}",
+                                                    server.config.security.reneg_sec
+                                                ));
 
                                                 // Push negotiated cipher for NCP
-                                                push_reply.options.push(format!("cipher {}", negotiated_cipher));
+                                                push_reply
+                                                    .options
+                                                    .push(format!("cipher {}", negotiated_cipher));
 
                                                 let reply_str = push_reply.encode();
 
                                                 // Check if OAuth is enabled - defer PUSH_REPLY until auth completes
-                                                let oauth_enabled = server.config.oauth.as_ref()
-                                                    .map(|o| o.enabled).unwrap_or(false);
+                                                let oauth_enabled = server
+                                                    .config
+                                                    .oauth
+                                                    .as_ref()
+                                                    .map(|o| o.enabled)
+                                                    .unwrap_or(false);
 
                                                 if oauth_enabled {
                                                     // Generate OAuth state token
-                                                    let state_token = format!("{:032x}", rand::random::<u128>());
+                                                    let state_token =
+                                                        format!("{:032x}", rand::random::<u128>());
 
                                                     // Store pending push reply and state
-                                                    conn.pending_push_reply = Some(reply_str.clone());
+                                                    conn.pending_push_reply =
+                                                        Some(reply_str.clone());
                                                     conn.oauth_state = Some(state_token.clone());
-                                                    conn.negotiated_cipher = Some(negotiated_cipher.clone());
+                                                    conn.negotiated_cipher =
+                                                        Some(negotiated_cipher.clone());
 
                                                     // Register in shared pending_oauths map
                                                     {
-                                                        let mut pending = server.pending_oauths.write();
-                                                        pending.insert(state_token.clone(), PendingOAuth {
-                                                            peer_addr,
-                                                            created_at: Instant::now(),
-                                                        });
+                                                        let mut pending =
+                                                            server.pending_oauths.write();
+                                                        pending.insert(
+                                                            state_token.clone(),
+                                                            PendingOAuth {
+                                                                peer_addr,
+                                                                created_at: Instant::now(),
+                                                            },
+                                                        );
                                                     }
 
                                                     // Build OAuth URL
@@ -945,7 +1173,10 @@ async fn handle_control_packet(
                                                         server.config.oauth.as_ref().unwrap(),
                                                         &server.config.server.public_host,
                                                     );
-                                                    let auth_url = format!("{}/auth/start?state={}", oauth_base, state_token);
+                                                    let auth_url = format!(
+                                                        "{}/auth/start?state={}",
+                                                        oauth_base, state_token
+                                                    );
 
                                                     // Send AUTH_PENDING and WEB_AUTH as separate control channel messages.
                                                     // AUTH_PENDING extends the handshake timeout; the URL is delivered
@@ -953,35 +1184,66 @@ async fn handle_control_packet(
                                                     // recognise it and open the browser.
                                                     let auth_pending = "AUTH_PENDING,timeout 120\0";
                                                     debug!("Sending AUTH_PENDING to {}", peer_addr);
-                                                    if let Err(e) = tls.write_plaintext(auth_pending.as_bytes()) {
-                                                        warn!("Failed to send AUTH_PENDING to {}: {}", peer_addr, e);
+                                                    if let Err(e) =
+                                                        tls.write_plaintext(auth_pending.as_bytes())
+                                                    {
+                                                        warn!(
+                                                            "Failed to send AUTH_PENDING to {}: {}",
+                                                            peer_addr, e
+                                                        );
                                                     }
 
-                                                    let web_auth = format!("INFO_PRE,WEB_AUTH::{}\0", auth_url);
-                                                    debug!("Sending WEB_AUTH URL to {}: {}", peer_addr, auth_url);
-                                                    if let Err(e) = tls.write_plaintext(web_auth.as_bytes()) {
-                                                        warn!("Failed to send WEB_AUTH to {}: {}", peer_addr, e);
+                                                    let web_auth = format!(
+                                                        "INFO_PRE,WEB_AUTH::{}\0",
+                                                        auth_url
+                                                    );
+                                                    debug!(
+                                                        "Sending WEB_AUTH URL to {}: {}",
+                                                        peer_addr, auth_url
+                                                    );
+                                                    if let Err(e) =
+                                                        tls.write_plaintext(web_auth.as_bytes())
+                                                    {
+                                                        warn!(
+                                                            "Failed to send WEB_AUTH to {}: {}",
+                                                            peer_addr, e
+                                                        );
                                                     }
 
                                                     // Flush TLS outgoing data for AUTH_PENDING + WEB_AUTH
                                                     while tls.wants_write() {
-                                                        if let Some(tls_out) = tls.get_outgoing()
-                                                            .map_err(|e| anyhow::anyhow!("TLS outgoing failed: {}", e))?
+                                                        if let Some(tls_out) =
+                                                            tls.get_outgoing().map_err(|e| {
+                                                                anyhow::anyhow!(
+                                                                    "TLS outgoing failed: {}",
+                                                                    e
+                                                                )
+                                                            })?
                                                         {
-                                                            let ctrl_packets = conn.protocol.create_control_packets(tls_out)?;
+                                                            let ctrl_packets = conn
+                                                                .protocol
+                                                                .create_control_packets(tls_out)?;
                                                             pending_packets.extend(ctrl_packets);
                                                         } else {
                                                             break;
                                                         }
                                                     }
 
-                                                    info!("Waiting for OAuth authentication from {} (state: {})", peer_addr, state_token);
+                                                    info!(
+                                                        "Waiting for OAuth authentication from {} (state: {})",
+                                                        peer_addr, state_token
+                                                    );
                                                 } else {
                                                     // No OAuth - send PUSH_REPLY immediately
                                                     debug!("Sending PUSH_REPLY to {}", peer_addr);
                                                     let reply_bytes = format!("{}\0", reply_str);
-                                                    if let Err(e) = tls.write_plaintext(reply_bytes.as_bytes()) {
-                                                        warn!("Failed to send PUSH_REPLY to {}: {}", peer_addr, e);
+                                                    if let Err(e) =
+                                                        tls.write_plaintext(reply_bytes.as_bytes())
+                                                    {
+                                                        warn!(
+                                                            "Failed to send PUSH_REPLY to {}: {}",
+                                                            peer_addr, e
+                                                        );
                                                     }
 
                                                     // Store PUSH_REPLY so we can resend on PUSH_REQUEST
@@ -991,28 +1253,49 @@ async fn handle_control_packet(
 
                                                     // Flush TLS outgoing data for push reply
                                                     while tls.wants_write() {
-                                                        if let Some(tls_out) = tls.get_outgoing()
-                                                            .map_err(|e| anyhow::anyhow!("TLS outgoing failed: {}", e))?
+                                                        if let Some(tls_out) =
+                                                            tls.get_outgoing().map_err(|e| {
+                                                                anyhow::anyhow!(
+                                                                    "TLS outgoing failed: {}",
+                                                                    e
+                                                                )
+                                                            })?
                                                         {
-                                                            debug!("Sending {} bytes of push reply TLS data to {}", tls_out.len(), peer_addr);
-                                                            let ctrl_packets = conn.protocol.create_control_packets(tls_out)?;
+                                                            debug!(
+                                                                "Sending {} bytes of push reply TLS data to {}",
+                                                                tls_out.len(),
+                                                                peer_addr
+                                                            );
+                                                            let ctrl_packets = conn
+                                                                .protocol
+                                                                .create_control_packets(tls_out)?;
                                                             pending_packets.extend(ctrl_packets);
                                                         } else {
                                                             break;
                                                         }
                                                     }
 
-                                                    conn.protocol.set_state(ProtocolState::Established);
-                                                    info!("VPN session established with {} (IP: {})", peer_addr, client_ip);
+                                                    conn.protocol
+                                                        .set_state(ProtocolState::Established);
+                                                    info!(
+                                                        "VPN session established with {} (IP: {})",
+                                                        peer_addr, client_ip
+                                                    );
                                                 }
                                             }
                                             Err(e) => {
-                                                warn!("Failed to allocate VPN IP for {}: {}", peer_addr, e);
+                                                warn!(
+                                                    "Failed to allocate VPN IP for {}: {}",
+                                                    peer_addr, e
+                                                );
                                             }
                                         }
                                     }
                                     Err(e) => {
-                                        warn!("Failed to parse key_method_v2 from {}: {}", peer_addr, e);
+                                        warn!(
+                                            "Failed to parse key_method_v2 from {}: {}",
+                                            peer_addr, e
+                                        );
                                     }
                                 }
                             }
@@ -1020,58 +1303,92 @@ async fn handle_control_packet(
 
                         // Log successful authentication if configured
                         if server.config.logging.connection_events.auth_events {
-                            log_events.push(ConnectionEventBuilder::with_id(conn.connection_id)
-                                .authentication(
+                            log_events.push(
+                                ConnectionEventBuilder::with_id(conn.connection_id).authentication(
                                     peer_addr,
                                     conn.username.clone(),
                                     conn.auth_method.clone(),
                                     crate::connection_log::AuthResult::Success,
-                                ));
+                                ),
+                            );
                         }
                     }
 
                     // Handle post-handshake TLS data (PUSH_REQUEST, etc.)
-                    if tls.is_handshake_complete() && conn.protocol.state() == ProtocolState::Established {
+                    if tls.is_handshake_complete()
+                        && conn.protocol.state() == ProtocolState::Established
+                    {
                         let mut buf = vec![0u8; 4096];
-                        while let Ok(n) = tls.read_plaintext(&mut buf) {
-                            if n == 0 { break; }
-                            let msg = String::from_utf8_lossy(&buf[..n]);
-                            let msg_trimmed = msg.trim_end_matches('\0').trim();
-                            debug!("Post-handshake plaintext from {}: {:?}", peer_addr, msg_trimmed);
+                        // Process a single post-handshake plaintext message (e.g. PUSH_REQUEST).
+                        if let Ok(n) = tls.read_plaintext(&mut buf) {
+                            if n != 0 {
+                                let msg = String::from_utf8_lossy(&buf[..n]);
+                                let msg_trimmed = msg.trim_end_matches('\0').trim();
+                                debug!(
+                                    "Post-handshake plaintext from {}: {:?}",
+                                    peer_addr, msg_trimmed
+                                );
 
-                            // Handle PUSH_REQUEST from standard OpenVPN clients
-                            // (e.g. Tunnelblick, OpenVPN Connect) which send
-                            // PUSH_REQUEST and expect PUSH_REPLY in response
-                            if msg_trimmed == "PUSH_REQUEST" {
-                                if let Some(ref reply_str) = conn.pending_push_reply {
-                                    debug!("Responding to PUSH_REQUEST from {} with stored PUSH_REPLY", peer_addr);
-                                    let reply_bytes = format!("{}\0", reply_str);
-                                    if let Err(e) = tls.write_plaintext(reply_bytes.as_bytes()) {
-                                        warn!("Failed to send PUSH_REPLY to {}: {}", peer_addr, e);
-                                    } else {
-                                        // Flush TLS outgoing data
-                                        while tls.wants_write() {
-                                            if let Some(tls_out) = tls.get_outgoing()
-                                                .map_err(|e| anyhow::anyhow!("TLS outgoing failed: {}", e))?
-                                            {
-                                                debug!("Sending {} bytes of PUSH_REPLY TLS data to {}", tls_out.len(), peer_addr);
-                                                let ctrl_packets = conn.protocol.create_control_packets(tls_out)?;
-                                                pending_packets.extend(ctrl_packets);
-                                            } else {
-                                                break;
+                                // Handle PUSH_REQUEST from standard OpenVPN clients
+                                // (e.g. Tunnelblick, OpenVPN Connect) which send
+                                // PUSH_REQUEST and expect PUSH_REPLY in response
+                                if msg_trimmed == "PUSH_REQUEST" {
+                                    if let Some(ref reply_str) = conn.pending_push_reply {
+                                        debug!(
+                                            "Responding to PUSH_REQUEST from {} with stored PUSH_REPLY",
+                                            peer_addr
+                                        );
+                                        let reply_bytes = format!("{}\0", reply_str);
+                                        if let Err(e) = tls.write_plaintext(reply_bytes.as_bytes())
+                                        {
+                                            warn!(
+                                                "Failed to send PUSH_REPLY to {}: {}",
+                                                peer_addr, e
+                                            );
+                                        } else {
+                                            // Flush TLS outgoing data
+                                            while tls.wants_write() {
+                                                if let Some(tls_out) =
+                                                    tls.get_outgoing().map_err(|e| {
+                                                        anyhow::anyhow!(
+                                                            "TLS outgoing failed: {}",
+                                                            e
+                                                        )
+                                                    })?
+                                                {
+                                                    debug!(
+                                                        "Sending {} bytes of PUSH_REPLY TLS data to {}",
+                                                        tls_out.len(),
+                                                        peer_addr
+                                                    );
+                                                    let ctrl_packets = conn
+                                                        .protocol
+                                                        .create_control_packets(tls_out)?;
+                                                    pending_packets.extend(ctrl_packets);
+                                                } else {
+                                                    break;
+                                                }
                                             }
+                                            info!(
+                                                "Sent PUSH_REPLY in response to PUSH_REQUEST from {}",
+                                                peer_addr
+                                            );
                                         }
-                                        info!("Sent PUSH_REPLY in response to PUSH_REQUEST from {}", peer_addr);
+                                    } else {
+                                        warn!(
+                                            "Received PUSH_REQUEST from {} but no PUSH_REPLY available",
+                                            peer_addr
+                                        );
                                     }
-                                } else {
-                                    warn!("Received PUSH_REQUEST from {} but no PUSH_REPLY available", peer_addr);
                                 }
                             }
-                            break;
                         }
                     }
                 } else {
-                    warn!("Received TLS data from {} but no TLS handler configured", peer_addr);
+                    warn!(
+                        "Received TLS data from {} but no TLS handler configured",
+                        peer_addr
+                    );
                 }
             }
             ProcessedPacket::HardReset { session_id: _ } => {
@@ -1082,8 +1399,10 @@ async fn handle_control_packet(
 
                 // Log renegotiation if configured
                 if server.config.logging.connection_events.renegotiations {
-                    log_events.push(ConnectionEventBuilder::with_id(conn.connection_id)
-                        .renegotiation(peer_addr, true));
+                    log_events.push(
+                        ConnectionEventBuilder::with_id(conn.connection_id)
+                            .renegotiation(peer_addr, true),
+                    );
                 }
             }
             ProcessedPacket::None => {
@@ -1151,12 +1470,29 @@ async fn handle_data_packet(
 
         // Debug: hex dump first data packets
         if conn.stats.packets_rx <= 5 {
-            let hex: String = data.iter().take(64).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
-            trace!("Data packet #{} from {} ({} bytes): {}{}", conn.stats.packets_rx, peer_addr, data.len(), hex, if data.len() > 64 { "..." } else { "" });
+            let hex: String = data
+                .iter()
+                .take(64)
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join(" ");
+            trace!(
+                "Data packet #{} from {} ({} bytes): {}{}",
+                conn.stats.packets_rx,
+                peer_addr,
+                data.len(),
+                hex,
+                if data.len() > 64 { "..." } else { "" }
+            );
             // Log opcode parsing
             if !data.is_empty() {
                 let opcode_byte = data[0];
-                trace!("  opcode_byte=0x{:02x} (opcode={}, key_id={})", opcode_byte, opcode_byte >> 3, opcode_byte & 0x07);
+                trace!(
+                    "  opcode_byte=0x{:02x} (opcode={}, key_id={})",
+                    opcode_byte,
+                    opcode_byte >> 3,
+                    opcode_byte & 0x07
+                );
             }
         }
 
@@ -1167,7 +1503,9 @@ async fn handle_data_packet(
         let mut response_packets: Vec<Bytes> = Vec::new();
 
         if let ProcessedPacket::Data(ip_packet) = result {
-            if ip_packet.len() == OPENVPN_PING_PAYLOAD.len() && ip_packet.as_ref() == OPENVPN_PING_PAYLOAD {
+            if ip_packet.len() == OPENVPN_PING_PAYLOAD.len()
+                && ip_packet.as_ref() == OPENVPN_PING_PAYLOAD
+            {
                 // OpenVPN keepalive ping - respond with ping back
                 trace!("Received keepalive ping from {}, responding", peer_addr);
                 match conn.protocol.encrypt_data(&OPENVPN_PING_PAYLOAD) {
@@ -1181,10 +1519,18 @@ async fn handle_data_packet(
                 }
             } else if ip_packet.len() >= 20 {
                 // Real IP packet - forward to TUN device
-                trace!("Received {} bytes of tunnel data from {}", ip_packet.len(), peer_addr);
+                trace!(
+                    "Received {} bytes of tunnel data from {}",
+                    ip_packet.len(),
+                    peer_addr
+                );
                 tun_data = Some(ip_packet.to_vec());
             } else {
-                debug!("Short data packet ({} bytes) from {}, ignoring", ip_packet.len(), peer_addr);
+                debug!(
+                    "Short data packet ({} bytes) from {}, ignoring",
+                    ip_packet.len(),
+                    peer_addr
+                );
             }
         }
 
@@ -1209,11 +1555,7 @@ async fn handle_data_packet(
 }
 
 /// Handle an IP packet read from the TUN device (route to appropriate client)
-async fn handle_tun_packet(
-    server: &VpnServer,
-    socket: &UdpSocket,
-    ip_packet: &[u8],
-) -> Result<()> {
+async fn handle_tun_packet(server: &VpnServer, socket: &UdpSocket, ip_packet: &[u8]) -> Result<()> {
     // Extract destination IPv4 address from IP header (bytes 16..20)
     if ip_packet.len() < 20 {
         return Ok(());
@@ -1231,22 +1573,21 @@ async fn handle_tun_packet(
     // Find the connection with this VPN IP and encrypt the packet
     let (peer_addr, encrypted) = {
         let mut connections = server.connections.write();
-        let conn = connections.values_mut()
-            .find(|c| c.vpn_ip == Some(dest_ip) && c.protocol.state() == ProtocolState::Established);
+        let conn = connections.values_mut().find(|c| {
+            c.vpn_ip == Some(dest_ip) && c.protocol.state() == ProtocolState::Established
+        });
 
         match conn {
-            Some(conn) => {
-                match conn.protocol.encrypt_data(ip_packet) {
-                    Ok(encrypted) => {
-                        conn.add_bytes_tx(encrypted.len() as u64);
-                        (conn.peer_addr, encrypted)
-                    }
-                    Err(e) => {
-                        debug!("Failed to encrypt packet for {}: {}", dest_ip, e);
-                        return Ok(());
-                    }
+            Some(conn) => match conn.protocol.encrypt_data(ip_packet) {
+                Ok(encrypted) => {
+                    conn.add_bytes_tx(encrypted.len() as u64);
+                    (conn.peer_addr, encrypted)
                 }
-            }
+                Err(e) => {
+                    debug!("Failed to encrypt packet for {}: {}", dest_ip, e);
+                    return Ok(());
+                }
+            },
             None => {
                 trace!("No client with VPN IP {}, dropping TUN packet", dest_ip);
                 return Ok(());
@@ -1263,17 +1604,15 @@ async fn handle_tun_packet(
 }
 
 /// Send keepalive pings to all established connections
-async fn send_keepalive_pings(
-    server: &VpnServer,
-    socket: &UdpSocket,
-) {
+async fn send_keepalive_pings(server: &VpnServer, socket: &UdpSocket) {
     // Collect ping packets while holding lock (sync encrypt operation)
     let ping_packets: Vec<(SocketAddr, Bytes)> = {
         let mut connections = server.connections.write();
-        connections.values_mut()
+        connections
+            .values_mut()
             .filter(|c| c.protocol.state() == ProtocolState::Established)
-            .filter_map(|conn| {
-                match conn.protocol.encrypt_data(&OPENVPN_PING_PAYLOAD) {
+            .filter_map(
+                |conn| match conn.protocol.encrypt_data(&OPENVPN_PING_PAYLOAD) {
                     Ok(encrypted) => {
                         conn.add_bytes_tx(encrypted.len() as u64);
                         Some((conn.peer_addr, encrypted))
@@ -1282,8 +1621,8 @@ async fn send_keepalive_pings(
                         debug!("Failed to encrypt keepalive for {}: {}", conn.peer_addr, e);
                         None
                     }
-                }
-            })
+                },
+            )
             .collect()
     }; // Lock released
 
@@ -1336,6 +1675,7 @@ fn get_default_interface() -> Option<String> {
 }
 
 /// Statistics for the server
+#[allow(dead_code)] // Constructed once a stats endpoint is wired up.
 #[derive(Debug, Clone, Default)]
 pub struct ServerStats {
     /// Total connections received
@@ -1352,11 +1692,13 @@ pub struct ServerStats {
     pub packets_tx: u64,
 }
 
+#[allow(dead_code)] // Constructor retained until a stats endpoint consumes it.
 impl ServerStats {
     /// Get current stats from server
     pub fn from_server(server: &VpnServer) -> Self {
         let connections = server.connections.read();
-        let active = connections.values()
+        let active = connections
+            .values()
             .filter(|c| c.protocol.is_established())
             .count();
 
@@ -1370,11 +1712,11 @@ impl ServerStats {
 
 /// Set resource limits for the server process
 fn set_resource_limits() -> Result<()> {
-    use nix::sys::resource::{getrlimit, setrlimit, Resource};
+    use nix::sys::resource::{Resource, getrlimit, setrlimit};
 
     // Set RLIMIT_NOFILE (file descriptors) - available on all Unix platforms
     let (_, hard_limit) = getrlimit(Resource::RLIMIT_NOFILE)?;
-    let soft_limit = (hard_limit.min(65536)).max(1024); // At least 1024, max 65536
+    let soft_limit = hard_limit.clamp(1024, 65536); // At least 1024, max 65536
     setrlimit(Resource::RLIMIT_NOFILE, soft_limit, hard_limit)?;
     info!("Set RLIMIT_NOFILE to {}", soft_limit);
 
@@ -1382,7 +1724,7 @@ fn set_resource_limits() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         let (_, hard_limit_proc) = getrlimit(Resource::RLIMIT_NPROC)?;
-        let soft_limit_proc = (hard_limit_proc.min(4096)).max(256);
+        let soft_limit_proc = hard_limit_proc.clamp(256, 4096);
         setrlimit(Resource::RLIMIT_NPROC, soft_limit_proc, hard_limit_proc)?;
         info!("Set RLIMIT_NPROC to {}", soft_limit_proc);
     }
@@ -1392,7 +1734,7 @@ fn set_resource_limits() -> Result<()> {
 
 /// Drop privileges after binding privileged ports
 fn drop_privileges() -> Result<()> {
-    use nix::unistd::{getuid, getgid, setuid, setgid, Uid, Gid};
+    use nix::unistd::{Gid, Uid, getuid, setgid, setuid};
 
     // Only drop if running as root
     if !getuid().is_root() {
@@ -1447,7 +1789,7 @@ struct OAuthState {
     config: corevpn_config::server::OAuthSettings,
     pending_oauths: PendingOAuthMap,
     auth_completed_tx: tokio::sync::mpsc::Sender<AuthCompleted>,
-    /// Base URL for OAuth callbacks (e.g. "https://vpn.example.com:9000")
+    /// Base URL for OAuth callbacks (e.g. `https://vpn.example.com:9000`)
     oauth_base_url: String,
 }
 
@@ -1455,7 +1797,7 @@ struct OAuthState {
 ///
 /// Truncate and redact an OAuth error response body for safe logging.
 /// Limits output to 200 chars and replaces values of fields containing
-/// "token" or "secret" with "[REDACTED]".
+/// "token" or "secret" with `[REDACTED]`.
 fn redact_oauth_error(body: &str) -> String {
     // Try to parse as JSON and redact sensitive fields
     if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(body) {
@@ -1510,8 +1852,6 @@ async fn handle_auth_completed(
     socket: &UdpSocket,
     auth: AuthCompleted,
 ) -> Result<()> {
-    let mut connections = server.connections.write();
-
     // Find connection by OAuth state token
     let peer_addr = {
         let pending = server.pending_oauths.read();
@@ -1521,7 +1861,10 @@ async fn handle_auth_completed(
     let peer_addr = match peer_addr {
         Some(addr) => addr,
         None => {
-            warn!("OAuth completed but no pending auth found for state: {}", auth.state);
+            warn!(
+                "OAuth completed but no pending auth found for state: {}",
+                auth.state
+            );
             return Ok(());
         }
     };
@@ -1532,63 +1875,75 @@ async fn handle_auth_completed(
         pending.remove(&auth.state);
     }
 
-    let conn = match connections.get_mut(&peer_addr) {
-        Some(c) => c,
-        None => {
-            warn!("OAuth completed but connection gone for {}", peer_addr);
+    // Mutate the connection under the lock and collect outgoing packets, then
+    // release the guard before awaiting the UDP sends (no sync lock across .await).
+    let packets = {
+        let mut connections = server.connections.write();
+
+        let conn = match connections.get_mut(&peer_addr) {
+            Some(c) => c,
+            None => {
+                warn!("OAuth completed but connection gone for {}", peer_addr);
+                return Ok(());
+            }
+        };
+
+        let push_reply_str = match conn.pending_push_reply.take() {
+            Some(s) => s,
+            None => {
+                warn!(
+                    "OAuth completed but no pending push reply for {}",
+                    peer_addr
+                );
+                return Ok(());
+            }
+        };
+
+        // Set authenticated user
+        conn.username = Some(auth.email.clone());
+        conn.auth_method = AuthMethod::OAuth2;
+
+        // Send PUSH_REPLY through TLS
+        let tls = match conn.tls.as_mut() {
+            Some(t) => t,
+            None => {
+                warn!("OAuth completed but no TLS handler for {}", peer_addr);
+                return Ok(());
+            }
+        };
+
+        debug!("Sending deferred PUSH_REPLY to {}", peer_addr);
+        let reply_bytes = format!("{}\0", push_reply_str);
+        if let Err(e) = tls.write_plaintext(reply_bytes.as_bytes()) {
+            warn!("Failed to send PUSH_REPLY to {}: {}", peer_addr, e);
             return Ok(());
         }
+
+        // Flush TLS outgoing data
+        let mut packets = Vec::new();
+        while tls.wants_write() {
+            if let Some(tls_out) = tls
+                .get_outgoing()
+                .map_err(|e| anyhow::anyhow!("TLS outgoing failed: {}", e))?
+            {
+                let ctrl_packets = conn.protocol.create_control_packets(tls_out)?;
+                packets.extend(ctrl_packets);
+            } else {
+                break;
+            }
+        }
+
+        conn.protocol.set_state(ProtocolState::Established);
+        let client_ip = conn.vpn_ip.map(|ip| ip.to_string()).unwrap_or_default();
+        info!(
+            "VPN session established with {} (user: {}, IP: {})",
+            peer_addr, auth.email, client_ip
+        );
+
+        packets
     };
 
-    let push_reply_str = match conn.pending_push_reply.take() {
-        Some(s) => s,
-        None => {
-            warn!("OAuth completed but no pending push reply for {}", peer_addr);
-            return Ok(());
-        }
-    };
-
-    // Set authenticated user
-    conn.username = Some(auth.email.clone());
-    conn.auth_method = AuthMethod::OAuth2;
-
-    // Send PUSH_REPLY through TLS
-    let tls = match conn.tls.as_mut() {
-        Some(t) => t,
-        None => {
-            warn!("OAuth completed but no TLS handler for {}", peer_addr);
-            return Ok(());
-        }
-    };
-
-    debug!("Sending deferred PUSH_REPLY to {}", peer_addr);
-    let reply_bytes = format!("{}\0", push_reply_str);
-    if let Err(e) = tls.write_plaintext(reply_bytes.as_bytes()) {
-        warn!("Failed to send PUSH_REPLY to {}: {}", peer_addr, e);
-        return Ok(());
-    }
-
-    // Flush TLS outgoing data
-    let mut packets = Vec::new();
-    while tls.wants_write() {
-        if let Some(tls_out) = tls.get_outgoing()
-            .map_err(|e| anyhow::anyhow!("TLS outgoing failed: {}", e))?
-        {
-            let ctrl_packets = conn.protocol.create_control_packets(tls_out)?;
-            packets.extend(ctrl_packets);
-        } else {
-            break;
-        }
-    }
-
-    conn.protocol.set_state(ProtocolState::Established);
-    let client_ip = conn.vpn_ip.map(|ip| ip.to_string()).unwrap_or_default();
-    info!("VPN session established with {} (user: {}, IP: {})", peer_addr, auth.email, client_ip);
-
-    // Release lock before sending UDP
-    drop(connections);
-
-    // Send all control packets
+    // Send all control packets (lock released)
     for packet in packets {
         socket.send_to(&packet, peer_addr).await?;
     }
@@ -1658,19 +2013,19 @@ async fn run_oauth_server(
             };
 
             let io = hyper_util::rt::TokioIo::new(tls_stream);
-            let service = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
-                let mut app = app.clone();
-                async move {
-                    use tower::Service;
-                    app.call(req).await
-                }
-            });
+            let service =
+                hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                    let mut app = app.clone();
+                    async move {
+                        use tower::Service;
+                        app.call(req).await
+                    }
+                });
 
-            if let Err(e) = hyper_util::server::conn::auto::Builder::new(
-                hyper_util::rt::TokioExecutor::new(),
-            )
-            .serve_connection(io, service)
-            .await
+            if let Err(e) =
+                hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+                    .serve_connection(io, service)
+                    .await
             {
                 debug!("OAuth connection error from {}: {}", addr, e);
             }
@@ -1692,17 +2047,24 @@ async fn oauth_start(
     axum::extract::State(state): axum::extract::State<OAuthState>,
     axum::extract::Query(query): axum::extract::Query<OAuthStartQuery>,
 ) -> axum::response::Response {
-    use axum::response::IntoResponse;
     use axum::http::StatusCode;
+    use axum::response::IntoResponse;
 
-    info!("OAuth /auth/start request received with state: {}", query.state);
+    info!(
+        "OAuth /auth/start request received with state: {}",
+        query.state
+    );
 
     // Verify state token exists in pending auths
     {
         let pending = state.pending_oauths.read();
         if !pending.contains_key(&query.state) {
             warn!("OAuth start: invalid state token: {}", query.state);
-            return (StatusCode::BAD_REQUEST, "Invalid or expired authentication state").into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                "Invalid or expired authentication state",
+            )
+                .into_response();
         }
     }
 
@@ -1722,7 +2084,10 @@ async fn oauth_start(
         urlencoding::encode(&query.state),
     );
 
-    info!("OAuth start: redirecting to Google for state: {} (callback: {})", query.state, redirect_uri);
+    info!(
+        "OAuth start: redirecting to Google for state: {} (callback: {})",
+        query.state, redirect_uri
+    );
     axum::response::Redirect::temporary(&auth_url).into_response()
 }
 
@@ -1741,8 +2106,8 @@ async fn oauth_callback(
     axum::extract::State(state): axum::extract::State<OAuthState>,
     axum::extract::Query(query): axum::extract::Query<OAuthCallbackQuery>,
 ) -> axum::response::Response {
-    use axum::response::IntoResponse;
     use axum::http::StatusCode;
+    use axum::response::IntoResponse;
     use secrecy::ExposeSecret;
 
     info!("OAuth /auth/callback received for state: {}", query.state);
@@ -1763,7 +2128,8 @@ async fn oauth_callback(
 
     // Exchange authorization code for tokens
     let client = reqwest::Client::new();
-    let token_response = client.post("https://oauth2.googleapis.com/token")
+    let token_response = client
+        .post("https://oauth2.googleapis.com/token")
         .form(&[
             ("code", query.code.as_str()),
             ("client_id", state.config.client_id.as_str()),
@@ -1813,23 +2179,22 @@ async fn oauth_callback(
         }
     };
 
-    let userinfo_response = client.get("https://www.googleapis.com/oauth2/v3/userinfo")
+    let userinfo_response = client
+        .get("https://www.googleapis.com/oauth2/v3/userinfo")
         .bearer_auth(access_token)
         .send()
         .await;
 
     let userinfo: serde_json::Value = match userinfo_response {
-        Ok(r) if r.status().is_success() => {
-            match r.json().await {
-                Ok(v) => v,
-                Err(e) => {
-                    error!("Failed to parse userinfo: {}", e);
-                    return (StatusCode::INTERNAL_SERVER_ERROR, axum::response::Html(
+        Ok(r) if r.status().is_success() => match r.json().await {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Failed to parse userinfo: {}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, axum::response::Html(
                         "<html><body><h1>Authentication Failed</h1><p>Internal error. Please try again.</p></body></html>"
                     )).into_response();
-                }
             }
-        }
+        },
         _ => {
             error!("Userinfo request failed");
             return (StatusCode::INTERNAL_SERVER_ERROR, axum::response::Html(
@@ -1850,9 +2215,17 @@ async fn oauth_callback(
 
     // Check allowed domains
     if !state.config.allowed_domains.is_empty() {
-        let email_domain = email.split('@').last().unwrap_or("");
-        if !state.config.allowed_domains.iter().any(|d| d == email_domain) {
-            warn!("OAuth: email {} not in allowed domains {:?}", email, state.config.allowed_domains);
+        let email_domain = email.split('@').next_back().unwrap_or("");
+        if !state
+            .config
+            .allowed_domains
+            .iter()
+            .any(|d| d == email_domain)
+        {
+            warn!(
+                "OAuth: email {} not in allowed domains {:?}",
+                email, state.config.allowed_domains
+            );
             return (StatusCode::FORBIDDEN, axum::response::Html(
                 "<html><body><h1>Access Denied</h1><p>Your email domain is not authorized for VPN access.</p></body></html>"
             )).into_response();
@@ -1862,10 +2235,14 @@ async fn oauth_callback(
     info!("OAuth authentication successful for: {}", email);
 
     // Notify VPN server of auth completion
-    if let Err(e) = state.auth_completed_tx.send(AuthCompleted {
-        state: query.state,
-        email: email.clone(),
-    }).await {
+    if let Err(e) = state
+        .auth_completed_tx
+        .send(AuthCompleted {
+            state: query.state,
+            email: email.clone(),
+        })
+        .await
+    {
         error!("Failed to send auth completion: {}", e);
         return (StatusCode::INTERNAL_SERVER_ERROR, axum::response::Html(
             "<html><body><h1>Authentication Failed</h1><p>Internal error. Please try again.</p></body></html>"
@@ -1886,7 +2263,8 @@ async fn oauth_callback(
          <p>Your VPN connection is being established. You can close this window.</p>\
          </body></html>",
         escaped_email
-    )).into_response()
+    ))
+    .into_response()
 }
 
 /// Request body for the /auth/complete endpoint (POST from native corevpn client)
@@ -1902,8 +2280,8 @@ async fn oauth_complete(
     axum::extract::State(state): axum::extract::State<OAuthState>,
     axum::extract::Json(body): axum::extract::Json<OAuthCompleteRequest>,
 ) -> axum::response::Response {
-    use axum::response::IntoResponse;
     use axum::http::StatusCode;
+    use axum::response::IntoResponse;
     use secrecy::ExposeSecret;
 
     info!("OAuth /auth/complete received for state: {}", body.state);
@@ -1913,9 +2291,13 @@ async fn oauth_complete(
         let pending = state.pending_oauths.read();
         if !pending.contains_key(&body.state) {
             warn!("OAuth complete: invalid state token: {}", body.state);
-            return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({
-                "error": "Invalid or expired authentication state"
-            }))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({
+                    "error": "Invalid or expired authentication state"
+                })),
+            )
+                .into_response();
         }
     }
 
@@ -1924,7 +2306,8 @@ async fn oauth_complete(
 
     // Exchange authorization code for tokens
     let client = reqwest::Client::new();
-    let token_response = client.post("https://oauth2.googleapis.com/token")
+    let token_response = client
+        .post("https://oauth2.googleapis.com/token")
         .form(&[
             ("code", body.code.as_str()),
             ("client_id", state.config.client_id.as_str()),
@@ -1939,9 +2322,13 @@ async fn oauth_complete(
         Ok(r) => r,
         Err(e) => {
             error!("OAuth token exchange failed: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({
-                "error": "Token exchange failed"
-            }))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({
+                    "error": "Token exchange failed"
+                })),
+            )
+                .into_response();
         }
     };
 
@@ -1949,18 +2336,26 @@ async fn oauth_complete(
         let body_text = token_response.text().await.unwrap_or_default();
         let redacted = redact_oauth_error(&body_text);
         error!("OAuth token exchange returned error: {}", redacted);
-        return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({
-            "error": "Token exchange failed"
-        }))).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({
+                "error": "Token exchange failed"
+            })),
+        )
+            .into_response();
     }
 
     let token_data: serde_json::Value = match token_response.json().await {
         Ok(v) => v,
         Err(e) => {
             error!("Failed to parse OAuth token response: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({
-                "error": "Token parse failed"
-            }))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({
+                    "error": "Token parse failed"
+                })),
+            )
+                .into_response();
         }
     };
 
@@ -1969,40 +2364,55 @@ async fn oauth_complete(
         Some(t) => t,
         None => {
             error!("No access_token in OAuth response");
-            return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({
-                "error": "No access token"
-            }))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({
+                    "error": "No access token"
+                })),
+            )
+                .into_response();
         }
     };
 
-    let userinfo_response = client.get("https://www.googleapis.com/oauth2/v3/userinfo")
+    let userinfo_response = client
+        .get("https://www.googleapis.com/oauth2/v3/userinfo")
         .bearer_auth(access_token)
         .send()
         .await;
 
     let userinfo: serde_json::Value = match userinfo_response {
-        Ok(r) if r.status().is_success() => {
-            match r.json().await {
-                Ok(v) => v,
-                Err(e) => {
-                    error!("Failed to parse userinfo: {}", e);
-                    return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({
+        Ok(r) if r.status().is_success() => match r.json().await {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Failed to parse userinfo: {}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({
                         "error": "Userinfo parse failed"
-                    }))).into_response();
-                }
+                    })),
+                )
+                    .into_response();
             }
-        }
+        },
         Ok(r) => {
             error!("Userinfo request failed with status: {}", r.status());
-            return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({
-                "error": "Userinfo request failed"
-            }))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({
+                    "error": "Userinfo request failed"
+                })),
+            )
+                .into_response();
         }
         Err(e) => {
             error!("Userinfo request failed: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({
-                "error": "Userinfo request failed"
-            }))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({
+                    "error": "Userinfo request failed"
+                })),
+            )
+                .into_response();
         }
     };
 
@@ -2010,39 +2420,64 @@ async fn oauth_complete(
         Some(e) => e.to_string(),
         None => {
             error!("No email in userinfo response");
-            return (StatusCode::FORBIDDEN, axum::Json(serde_json::json!({
-                "error": "No email in profile"
-            }))).into_response();
+            return (
+                StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({
+                    "error": "No email in profile"
+                })),
+            )
+                .into_response();
         }
     };
 
     // Check allowed domains
     if !state.config.allowed_domains.is_empty() {
-        let email_domain = email.split('@').last().unwrap_or("");
-        if !state.config.allowed_domains.iter().any(|d| d == email_domain) {
-            warn!("OAuth: email {} not in allowed domains {:?}", email, state.config.allowed_domains);
-            return (StatusCode::FORBIDDEN, axum::Json(serde_json::json!({
-                "error": "Your email domain is not authorized for VPN access"
-            }))).into_response();
+        let email_domain = email.split('@').next_back().unwrap_or("");
+        if !state
+            .config
+            .allowed_domains
+            .iter()
+            .any(|d| d == email_domain)
+        {
+            warn!(
+                "OAuth: email {} not in allowed domains {:?}",
+                email, state.config.allowed_domains
+            );
+            return (
+                StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({
+                    "error": "Your email domain is not authorized for VPN access"
+                })),
+            )
+                .into_response();
         }
     }
 
     info!("OAuth authentication successful for: {}", email);
 
     // Notify VPN server of auth completion
-    if let Err(e) = state.auth_completed_tx.send(AuthCompleted {
-        state: body.state,
-        email: email.clone(),
-    }).await {
+    if let Err(e) = state
+        .auth_completed_tx
+        .send(AuthCompleted {
+            state: body.state,
+            email: email.clone(),
+        })
+        .await
+    {
         error!("Failed to send auth completion: {}", e);
-        return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({
-            "error": "Internal error"
-        }))).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({
+                "error": "Internal error"
+            })),
+        )
+            .into_response();
     }
 
     // Return success to the client's SSO service
     axum::Json(serde_json::json!({
         "status": "ok",
         "email": email,
-    })).into_response()
+    }))
+    .into_response()
 }

@@ -12,23 +12,21 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs, rust_2018_idioms)]
 
-pub mod error;
-pub mod keys;
-pub mod cipher;
-pub mod kdf;
 pub mod cert;
+pub mod cipher;
+pub mod error;
 pub mod hmac_auth;
+pub mod kdf;
+pub mod keys;
 
-pub use error::{CryptoError, Result};
-pub use keys::{
-    StaticSecret, PublicKey, SharedSecret,
-    SigningKey, VerifyingKey, Signature,
-    KeyPair,
-};
+pub use cert::{Certificate, CertificateAuthority, CertificateRequest, parse_static_key};
 pub use cipher::{Cipher, CipherSuite, DataChannelKey, PacketCipher};
-pub use kdf::{derive_keys, openvpn_prf, KeyMaterial};
-pub use cert::{CertificateAuthority, Certificate, CertificateRequest, parse_static_key};
+pub use error::{CryptoError, Result};
 pub use hmac_auth::HmacAuth;
+pub use kdf::{KeyMaterial, derive_keys, openvpn_prf};
+pub use keys::{
+    KeyPair, PublicKey, SharedSecret, Signature, SigningKey, StaticSecret, VerifyingKey,
+};
 
 /// Securely generate random bytes
 pub fn random_bytes<const N: usize>() -> [u8; N] {
