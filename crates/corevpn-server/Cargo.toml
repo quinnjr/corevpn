@@ -83,7 +83,7 @@ hostname = "0.4"
 log = "0.4"
 
 # Security (with features for privilege dropping and resource limits)
-nix = { version = "0.28", features = ["user", "resource", "fs"] }
+nix = { version = "0.31", features = ["user", "resource", "fs"] }
 sha2 = { workspace = true }
 hmac = { workspace = true }
 rand = { workspace = true }
