@@ -73,7 +73,7 @@ tun = { version = "0.6", features = ["async"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 axum = "0.8"
 tower = "0.4"
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
