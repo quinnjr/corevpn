@@ -62,7 +62,7 @@ rcgen = "0.13"
 pem = "3"
 
 # Networking
-socket2 = "0.5"
+socket2 = "0.6"
 tokio-rustls = "0.26"
 webpki-roots = "0.26"
 
